@@ -156,7 +156,7 @@ export const generateSchedule = (
   manualHistory?: ManualHistoryInput
 ): ScheduleVersion => {
   const days = getFullWeeksRange(year, month);
-  const totalDaysInMonth = new Date(year, month + 1, 0).getDate(); // For pacing calc
+  const monthDays = getDaysInMonth(year, month);
   const schedule: DailySchedule[] = [];
   
   const workHistory = new Map<string, Set<string>>();
@@ -164,19 +164,27 @@ export const generateSchedule = (
   const consecutiveDays = new Map<string, number>();
   const stats = new Map<string, { day: number, night: number, total: number }>();
   
+  // availability tracking for fair pacing
+  const totalWorkableDaysInMonth = new Map<string, number>();
+  const workableDaysPassed = new Map<string, number>();
+
   // Initialize
   employees.forEach(e => {
     workHistory.set(e.id, new Set());
-    if (history) {
-       // Reset stats for the new month
-       stats.set(e.id, { day: 0, night: 0, total: 0 });
-       consecutiveDays.set(e.id, history.consecutiveDaysEnding[e.id] || 0);
-       lastShiftType.set(e.id, null); 
-    } else {
-       stats.set(e.id, { day: 0, night: 0, total: 0 });
-       consecutiveDays.set(e.id, 0);
-       lastShiftType.set(e.id, null);
-    }
+    stats.set(e.id, { day: 0, night: 0, total: 0 });
+    consecutiveDays.set(e.id, history ? (history.consecutiveDaysEnding[e.id] || 0) : 0);
+    lastShiftType.set(e.id, null);
+    workableDaysPassed.set(e.id, 0);
+
+    // Pre-calculate total workable days for this employee in the target month
+    let count = 0;
+    monthDays.forEach(d => {
+       const dateKey = formatDateKey(d);
+       const isDayOff = e.availability.daysOff.includes(d.getDay());
+       const isUnavailable = e.availability.unavailableDates?.includes(dateKey);
+       if (!isDayOff && !isUnavailable) count++;
+    });
+    totalWorkableDaysInMonth.set(e.id, count);
   });
 
   // --- WARMUP PHASE ---
@@ -194,7 +202,6 @@ export const generateSchedule = (
                 if (todayWorkers.includes(e.id)) {
                     consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
                     workHistory.get(e.id)?.add(dateKey);
-                    
                     if (entry.dayShift.includes(e.id)) lastShiftType.set(e.id, ShiftType.DAY);
                     else lastShiftType.set(e.id, ShiftType.NIGHT);
                 } else {
@@ -214,12 +221,18 @@ export const generateSchedule = (
     const isTargetMonth = dayDate.getMonth() === month && dayDate.getFullYear() === year;
     const isPadding = !isTargetMonth;
 
-    let pacingDayNum = dayDate.getDate();
-    if (dayDate.getMonth() < month) pacingDayNum = 0; 
-    if (dayDate.getMonth() > month) pacingDayNum = totalDaysInMonth; 
+    // Track how many workable days have passed for each employee
+    if (isTargetMonth) {
+        employees.forEach(e => {
+            const isDayOff = e.availability.daysOff.includes(dayOfWeek);
+            const isUnavailable = e.availability.unavailableDates?.includes(dateKey);
+            if (!isDayOff && !isUnavailable) {
+                workableDaysPassed.set(e.id, (workableDaysPassed.get(e.id) || 0) + 1);
+            }
+        });
+    }
 
     const reqs = config.requirements[dayOfWeek] || { day: 1, night: 1 };
-    
     const manualEntry = manualHistory ? manualHistory[dateKey] : undefined;
 
     let dayWorkers: string[] = [];
@@ -230,7 +243,6 @@ export const generateSchedule = (
       nightWorkers = manualEntry.nightShift;
     } else {
       const forbiddenDayWorkers: string[] = [];
-      
       employees.forEach(e => {
          const yesterdayDate = new Date(dayDate);
          yesterdayDate.setDate(yesterdayDate.getDate() - 1);
@@ -250,8 +262,8 @@ export const generateSchedule = (
         employees,
         reqs.day,
         dayDate,
-        pacingDayNum,
-        totalDaysInMonth,
+        workableDaysPassed,
+        totalWorkableDaysInMonth,
         ShiftType.DAY,
         workHistory,
         lastShiftType,
@@ -266,8 +278,8 @@ export const generateSchedule = (
         employees,
         reqs.night,
         dayDate,
-        pacingDayNum,
-        totalDaysInMonth,
+        workableDaysPassed,
+        totalWorkableDaysInMonth,
         ShiftType.NIGHT,
         workHistory,
         lastShiftType,
@@ -279,19 +291,13 @@ export const generateSchedule = (
     }
 
     const todayWorkers = [...dayWorkers, ...nightWorkers];
-    
     employees.forEach(e => {
       const workedToday = todayWorkers.includes(e.id);
-      
       if (workedToday) {
         workHistory.get(e.id)?.add(dateKey);
         consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
-        
-        if (dayWorkers.includes(e.id)) {
-          lastShiftType.set(e.id, ShiftType.DAY);
-        } else {
-          lastShiftType.set(e.id, ShiftType.NIGHT);
-        }
+        if (dayWorkers.includes(e.id)) lastShiftType.set(e.id, ShiftType.DAY);
+        else lastShiftType.set(e.id, ShiftType.NIGHT);
 
         if (isTargetMonth) {
           const s = stats.get(e.id)!;
@@ -299,30 +305,18 @@ export const generateSchedule = (
           if (dayWorkers.includes(e.id)) s.day += 1;
           else s.night += 1;
         }
-
       } else {
         consecutiveDays.set(e.id, 0);
         lastShiftType.set(e.id, null); 
       }
     });
 
-    schedule.push({
-      date: dateKey,
-      dayShift: dayWorkers,
-      nightShift: nightWorkers,
-      isPadding
-    });
+    schedule.push({ date: dateKey, dayShift: dayWorkers, nightShift: nightWorkers, isPadding });
   }
 
   const finalStats: Record<string, EmployeeStats> = {};
-  
   employees.forEach(e => {
-    let monthDay = 0;
-    let monthNight = 0;
-    let monthTotal = 0;
-    let maxStreak = 0;
-    let currentStreak = 0;
-    
+    let monthDay = 0, monthNight = 0, monthTotal = 0, maxStreak = 0, currentStreak = 0;
     schedule.forEach(daySch => {
       const worked = daySch.dayShift.includes(e.id) || daySch.nightShift.includes(e.id);
       if (worked) {
@@ -331,20 +325,13 @@ export const generateSchedule = (
       } else {
         currentStreak = 0;
       }
-
       if (!daySch.isPadding && worked) {
         monthTotal++;
         if (daySch.dayShift.includes(e.id)) monthDay++;
         else monthNight++;
       }
     });
-
-    finalStats[e.id] = {
-      totalShifts: monthTotal,
-      dayShifts: monthDay,
-      nightShifts: monthNight,
-      longestStreak: maxStreak
-    };
+    finalStats[e.id] = { totalShifts: monthTotal, dayShifts: monthDay, nightShifts: monthNight, longestStreak: maxStreak };
   });
 
   return {
@@ -363,8 +350,8 @@ function pickWorkers(
   pool: Employee[],
   count: number,
   date: Date,
-  currentDayNum: number,
-  totalDays: number,
+  workableDaysPassed: Map<string, number>,
+  totalWorkableDaysInMonth: Map<string, number>,
   shiftType: ShiftType,
   workHistory: Map<string, Set<string>>,
   lastShiftType: Map<string, ShiftType | null>,
@@ -397,10 +384,7 @@ function pickWorkers(
         yesterday.setDate(date.getDate() - 1);
         const yKey = formatDateKey(yesterday);
         const workedYesterday = workHistory.get(e.id)?.has(yKey);
-        
-        if (workedYesterday && lastShiftType.get(e.id) === ShiftType.NIGHT) {
-            return false;
-        }
+        if (workedYesterday && lastShiftType.get(e.id) === ShiftType.NIGHT) return false;
     }
 
     return true;
@@ -416,20 +400,25 @@ function pickWorkers(
     const metTargetB = targetB > 0 && statsB.total >= targetB;
     if (metTargetA !== metTargetB) return metTargetA ? 1 : -1; 
     
-    const getPacingDiff = (empTarget: number, currentTotal: number) => {
-        if (empTarget <= 0) return 0;
-        const expected = empTarget * (Math.max(1, currentDayNum) / totalDays);
+    // Prorated Pacing: Compare shifts worked to available shifts opportunity
+    const getPacingDiff = (empId: string, empTarget: number, currentTotal: number) => {
+        const totalWorkable = totalWorkableDaysInMonth.get(empId) || 0;
+        const passedWorkable = workableDaysPassed.get(empId) || 0;
+        if (empTarget <= 0 || totalWorkable === 0) return 0;
+        
+        // Key logic: Expected shifts are proportional to MY actual availability
+        const expected = empTarget * (passedWorkable / totalWorkable);
         return currentTotal - expected;
     };
 
-    const diffA = getPacingDiff(targetA, statsA.total);
-    const diffB = getPacingDiff(targetB, statsB.total);
+    const diffA = getPacingDiff(a.id, targetA, statsA.total);
+    const diffB = getPacingDiff(b.id, targetB, statsB.total);
     
     const getCategory = (diff: number, hasTarget: boolean) => {
         if (!hasTarget) return 2; 
-        if (diff < -0.8) return 1; 
-        if (diff > 0.8) return 3; 
-        return 2;
+        if (diff < -0.8) return 1; // Behind
+        if (diff > 0.8) return 3;  // Ahead
+        return 2; // On track
     };
 
     const catA = getCategory(diffA, targetA > 0);
@@ -438,6 +427,13 @@ function pickWorkers(
 
     let scoreA = statsA.total;
     let scoreB = statsB.total;
+
+    // Tie-break: if no specific target, balance based on utilization rate
+    if (targetA === 0 && targetB === 0) {
+        const utilA = statsA.total / Math.max(1, workableDaysPassed.get(a.id) || 1);
+        const utilB = statsB.total / Math.max(1, workableDaysPassed.get(b.id) || 1);
+        if (Math.abs(utilA - utilB) > 0.01) return utilA - utilB;
+    }
 
     if (prioritizeEitherForDay && shiftType === ShiftType.DAY) {
         if (a.preference === WorkerPreference.EITHER) scoreA -= 2;
@@ -459,8 +455,7 @@ function pickWorkers(
 }
 
 export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => {
-    let maxDay = 0;
-    let maxNight = 0;
+    let maxDay = 0, maxNight = 0;
     version.schedule.forEach(s => {
         maxDay = Math.max(maxDay, s.dayShift.length);
         maxNight = Math.max(maxNight, s.nightShift.length);
@@ -471,7 +466,6 @@ export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => 
     for(let i=0; i<maxNight; i++) headers.push(`Night Shift Worker ${i+1}`);
     
     let csvContent = "\uFEFF" + headers.join(",") + "\n";
-
     version.schedule.forEach(row => {
         const line = [row.date, row.isPadding ? 'Yes' : 'No'];
         for(let i=0; i<maxDay; i++) {
@@ -499,15 +493,13 @@ export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => 
 };
 
 export const exportToExcel = (version: ScheduleVersion, employees: Employee[]) => {
-    let maxDay = 0;
-    let maxNight = 0;
+    let maxDay = 0, maxNight = 0;
     version.schedule.forEach(s => {
         maxDay = Math.max(maxDay, s.dayShift.length);
         maxNight = Math.max(maxNight, s.nightShift.length);
     });
 
     const getName = (id: string | undefined) => id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
-
     let headerCells = `<th style="background-color:#e2e8f0; border:1px solid #94a3b8;">Date</th>`;
     for(let i=0; i<maxDay; i++) headerCells += `<th style="background-color:#fef3c7; border:1px solid #94a3b8;">Day Worker ${i+1}</th>`;
     for(let i=0; i<maxNight; i++) headerCells += `<th style="background-color:#e0e7ff; border:1px solid #94a3b8;">Night Worker ${i+1}</th>`;
@@ -516,12 +508,8 @@ export const exportToExcel = (version: ScheduleVersion, employees: Employee[]) =
     version.schedule.forEach(row => {
         const bg = row.isPadding ? '#f1f5f9' : '#ffffff';
         let rowCells = `<td style="border:1px solid #cbd5e1; background-color:${bg};">${row.date}${row.isPadding ? ' (Pad)' : ''}</td>`;
-        for(let i=0; i<maxDay; i++) {
-            rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.dayShift[i])}</td>`;
-        }
-        for(let i=0; i<maxNight; i++) {
-            rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.nightShift[i])}</td>`;
-        }
+        for(let i=0; i<maxDay; i++) rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.dayShift[i])}</td>`;
+        for(let i=0; i<maxNight; i++) rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.nightShift[i])}</td>`;
         tableRows += `<tr>${rowCells}</tr>`;
     });
 
