@@ -13,6 +13,8 @@ export enum WorkerPreference {
 export interface Availability {
   // 0 = Sunday, 1 = Monday, ... 6 = Saturday
   daysOff: number[]; 
+  // Specific ISO dates YYYY-MM-DD
+  unavailableDates: string[];
 }
 
 export interface Employee {

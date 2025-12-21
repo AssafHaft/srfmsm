@@ -168,10 +168,8 @@ export const generateSchedule = (
   employees.forEach(e => {
     workHistory.set(e.id, new Set());
     if (history) {
-       // IMPORTANT: Reset stats to 0 for the new month so quotas start fresh.
+       // Reset stats for the new month
        stats.set(e.id, { day: 0, night: 0, total: 0 });
-       
-       // Keep CONSTRAINTS from history (burnout/streaks)
        consecutiveDays.set(e.id, history.consecutiveDaysEnding[e.id] || 0);
        lastShiftType.set(e.id, null); 
     } else {
@@ -182,11 +180,8 @@ export const generateSchedule = (
   });
 
   // --- WARMUP PHASE ---
-  // Iterate through the 7 days BEFORE the grid starts. 
-  // If Manual History exists for these days, we process them to set up "consecutiveDays" and "lastShiftType".
   if (manualHistory && days.length > 0) {
     const gridStart = days[0];
-    // Check up to 7 days before grid start
     for (let i = 7; i > 0; i--) {
         const d = new Date(gridStart);
         d.setDate(d.getDate() - i);
@@ -219,46 +214,32 @@ export const generateSchedule = (
     const isTargetMonth = dayDate.getMonth() === month && dayDate.getFullYear() === year;
     const isPadding = !isTargetMonth;
 
-    // Use current day number relative to target month (can be negative or > 31 for padding, but we clamp for pacing)
     let pacingDayNum = dayDate.getDate();
-    if (dayDate.getMonth() < month) pacingDayNum = 0; // Pre-month
-    if (dayDate.getMonth() > month) pacingDayNum = totalDaysInMonth; // Post-month
+    if (dayDate.getMonth() < month) pacingDayNum = 0; 
+    if (dayDate.getMonth() > month) pacingDayNum = totalDaysInMonth; 
 
     const reqs = config.requirements[dayOfWeek] || { day: 1, night: 1 };
     
-    // Check Manual History Overrides (for any day in the grid)
     const manualEntry = manualHistory ? manualHistory[dateKey] : undefined;
 
     let dayWorkers: string[] = [];
     let nightWorkers: string[] = [];
 
     if (manualEntry) {
-      // Use manually provided input (Frozen)
       dayWorkers = manualEntry.dayShift;
       nightWorkers = manualEntry.nightShift;
     } else {
-      // Generate automatically
-      
-      // Determine forbidden workers for Day shift (Day After Night rule)
       const forbiddenDayWorkers: string[] = [];
       
-      // Check constraints against PREVIOUS DAY state
-      // (State is either from yesterday in loop, or from Warmup Phase, or from CSV history)
       employees.forEach(e => {
          const yesterdayDate = new Date(dayDate);
          yesterdayDate.setDate(yesterdayDate.getDate() - 1);
          const yKey = formatDateKey(yesterdayDate);
 
-         // We check actual work history or Manual Input from yesterday
-         // Note: workHistory Set is populated as we go
          if (lastShiftType.get(e.id) === ShiftType.NIGHT) {
-            // But we must verify they actually worked *yesterday* 
-            // (lastShiftType is sticky until reset on a day off, but consecutiveDays resets)
-            // safer check:
              if (workHistory.get(e.id)?.has(yKey)) {
                  forbiddenDayWorkers.push(e.id);
              } else if (dayIndex === 0 && history && history.lastDayNightShiftIds.includes(e.id)) {
-                 // Fallback to CSV history if no Manual Input for day -1
                  forbiddenDayWorkers.push(e.id);
              }
          }
@@ -297,7 +278,6 @@ export const generateSchedule = (
       );
     }
 
-    // --- Update Constraints & State ---
     const todayWorkers = [...dayWorkers, ...nightWorkers];
     
     employees.forEach(e => {
@@ -313,9 +293,6 @@ export const generateSchedule = (
           lastShiftType.set(e.id, ShiftType.NIGHT);
         }
 
-        // Only update STATS (Fairness/Quota) if it's the target month!
-        // Padding days influence constraints (consecutive) but don't count towards the month's paycheck/quota.
-        // UNLESS it's a manual entry that explicitly falls into the target month.
         if (isTargetMonth) {
           const s = stats.get(e.id)!;
           s.total += 1;
@@ -337,7 +314,6 @@ export const generateSchedule = (
     });
   }
 
-  // Calculate final stats for display (only counting non-padding days)
   const finalStats: Record<string, EmployeeStats> = {};
   
   employees.forEach(e => {
@@ -348,7 +324,6 @@ export const generateSchedule = (
     let currentStreak = 0;
     
     schedule.forEach(daySch => {
-      // Streak calc considers padding days too (true exhaustion)
       const worked = daySch.dayShift.includes(e.id) || daySch.nightShift.includes(e.id);
       if (worked) {
         currentStreak++;
@@ -357,7 +332,6 @@ export const generateSchedule = (
         currentStreak = 0;
       }
 
-      // Counts only consider target month
       if (!daySch.isPadding && worked) {
         monthTotal++;
         if (daySch.dayShift.includes(e.id)) monthDay++;
@@ -399,6 +373,8 @@ function pickWorkers(
   excludeIds: string[],
   prioritizeEitherForDay: boolean = false
 ): string[] {
+  const dateKey = formatDateKey(date);
+  
   const candidates = pool.filter(e => {
     if (excludeIds.includes(e.id)) return false;
 
@@ -406,8 +382,11 @@ function pickWorkers(
     if (shiftType === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) return false;
     if (shiftType === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) return false;
 
-    // Availability
+    // Weekly Availability (Days of Week)
     if (e.availability.daysOff.includes(date.getDay())) return false;
+
+    // Specific Unavailability (Vacations/Dates)
+    if (e.availability.unavailableDates?.includes(dateKey)) return false;
 
     // HARD CONSTRAINT: Max 5 consecutive
     if ((consecutiveDays.get(e.id) || 0) >= 5) return false;
@@ -427,19 +406,16 @@ function pickWorkers(
     return true;
   });
 
-  // Sort candidates
   candidates.sort((a, b) => {
     const statsA = stats.get(a.id)!;
     const statsB = stats.get(b.id)!;
     const targetA = a.targetShifts || 0;
     const targetB = b.targetShifts || 0;
     
-    // Priority 1: Met Target? (Deprioritize if yes)
     const metTargetA = targetA > 0 && statsA.total >= targetA;
     const metTargetB = targetB > 0 && statsB.total >= targetB;
     if (metTargetA !== metTargetB) return metTargetA ? 1 : -1; 
     
-    // Priority 2: Pacing (Even distribution over month)
     const getPacingDiff = (empTarget: number, currentTotal: number) => {
         if (empTarget <= 0) return 0;
         const expected = empTarget * (Math.max(1, currentDayNum) / totalDays);
@@ -449,14 +425,10 @@ function pickWorkers(
     const diffA = getPacingDiff(targetA, statsA.total);
     const diffB = getPacingDiff(targetB, statsB.total);
     
-    // Categorize: 
-    // 1 (Behind) = High Priority
-    // 2 (On Track) = Normal
-    // 3 (Ahead) = Low Priority
     const getCategory = (diff: number, hasTarget: boolean) => {
         if (!hasTarget) return 2; 
-        if (diff < -0.8) return 1; // Urgent catchup
-        if (diff > 0.8) return 3; // Cool down
+        if (diff < -0.8) return 1; 
+        if (diff > 0.8) return 3; 
         return 2;
     };
 
@@ -464,7 +436,6 @@ function pickWorkers(
     const catB = getCategory(diffB, targetB > 0);
     if (catA !== catB) return catA - catB;
 
-    // Priority 3: Fairness (Total Shifts)
     let scoreA = statsA.total;
     let scoreB = statsB.total;
 
@@ -475,7 +446,6 @@ function pickWorkers(
 
     if (scoreA !== scoreB) return scoreA - scoreB;
     
-    // Priority 4: Preference Balance
     if (a.preference === WorkerPreference.EITHER && b.preference === WorkerPreference.EITHER) {
         const aRatio = shiftType === ShiftType.DAY ? statsA.day : statsA.night;
         const bRatio = shiftType === ShiftType.DAY ? statsB.day : statsB.night;

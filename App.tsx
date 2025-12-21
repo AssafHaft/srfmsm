@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { 
   Users, Calendar, Settings, History, Plus, Trash2, Download, 
-  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info
+  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info, Plane, CalendarRange
 } from 'lucide-react';
 import { 
   Employee, ShiftConfig, ScheduleVersion, WorkerPreference, 
@@ -21,12 +21,11 @@ const ManualHistoryModal: React.FC<{
 }> = ({ isOpen, onClose, year, month, employees, onSave }) => {
   if (!isOpen) return null;
 
-  // Calculate the 14-day range: 7 days BEFORE the grid starts, and the first 7 days OF the grid
   const gridDays = getFullWeeksRange(year, month);
   const gridStart = gridDays[0];
   
-  const contextDates: Date[] = []; // -7 to -1
-  const scheduleDates: Date[] = []; // 0 to 6
+  const contextDates: Date[] = []; 
+  const scheduleDates: Date[] = []; 
   
   for (let i = 7; i > 0; i--) {
       const d = new Date(gridStart);
@@ -120,8 +119,8 @@ const ManualHistoryModal: React.FC<{
                  <div>
                     <strong>Manual Transition Context:</strong>
                     <ul className="list-disc ml-4 mt-1 space-y-1">
-                       <li><strong>Previous Context (Week 1):</strong> Hidden days used only to calculate constraints (like "No Day after Night" or fatigue).</li>
-                       <li><strong>Schedule Start (Week 2):</strong> First visible week of the new grid. Set this to "Freeze" the end of the previous month's schedule exactly as it was.</li>
+                       <li><strong>Previous Context (Week 1):</strong> Hidden days used only to calculate constraints.</li>
+                       <li><strong>Schedule Start (Week 2):</strong> First visible week of the new grid.</li>
                     </ul>
                  </div>
              </div>
@@ -162,15 +161,25 @@ const EmployeeManager: React.FC<{
   const [newName, setNewName] = useState('');
   const [newPref, setNewPref] = useState<WorkerPreference>(WorkerPreference.EITHER);
   const [newDaysOff, setNewDaysOff] = useState<number[]>([]);
+  const [newUnavailableDates, setNewUnavailableDates] = useState<string[]>([]);
   const [newTargetShifts, setNewTargetShifts] = useState<string>('');
+  
+  // Specific Date Inputs
+  const [dateInput, setDateInput] = useState('');
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
 
   const resetForm = () => {
     setNewName('');
     setNewPref(WorkerPreference.EITHER);
     setNewDaysOff([]);
+    setNewUnavailableDates([]);
     setNewTargetShifts('');
     setEditingId(null);
     setIsAdding(false);
+    setDateInput('');
+    setRangeStart('');
+    setRangeEnd('');
   };
 
   const startAdding = () => { resetForm(); setIsAdding(true); };
@@ -178,6 +187,7 @@ const EmployeeManager: React.FC<{
     setNewName(e.name);
     setNewPref(e.preference);
     setNewDaysOff(e.availability.daysOff);
+    setNewUnavailableDates(e.availability.unavailableDates || []);
     setNewTargetShifts(e.targetShifts ? e.targetShifts.toString() : '');
     setEditingId(e.id);
     setIsAdding(true);
@@ -186,14 +196,26 @@ const EmployeeManager: React.FC<{
   const handleSave = () => {
     if (!newName.trim()) return;
     const targetShifts = newTargetShifts ? parseInt(newTargetShifts) : undefined;
+    const employeeData = {
+      name: newName, 
+      preference: newPref, 
+      availability: { 
+        daysOff: newDaysOff, 
+        unavailableDates: newUnavailableDates 
+      }, 
+      targetShifts,
+    };
+
     if (editingId) {
       onUpdate({
-        id: editingId, name: newName, preference: newPref, availability: { daysOff: newDaysOff }, targetShifts,
+        ...employeeData,
+        id: editingId,
         color: employees.find(e => e.id === editingId)?.color || '#fff'
       });
     } else {
       onAdd({
-        id: crypto.randomUUID(), name: newName, preference: newPref, availability: { daysOff: newDaysOff }, targetShifts,
+        ...employeeData,
+        id: crypto.randomUUID(),
         color: `hsl(${Math.floor(Math.random() * 360)}, 70%, 80%)`
       });
     }
@@ -203,6 +225,44 @@ const EmployeeManager: React.FC<{
   const toggleDayOff = (dayIndex: number) => {
     setNewDaysOff(prev => prev.includes(dayIndex) ? prev.filter(d => d !== dayIndex) : [...prev, dayIndex]);
   };
+
+  const addUnavailableDate = () => {
+    if (!dateInput || newUnavailableDates.includes(dateInput)) return;
+    setNewUnavailableDates(prev => [...prev, dateInput].sort());
+    setDateInput('');
+  };
+
+  const addRange = () => {
+    if (!rangeStart || !rangeEnd) return;
+    if (rangeStart > rangeEnd) { alert("Start date must be before end date"); return; }
+    
+    const datesToAdd: string[] = [];
+    const current = new Date(rangeStart);
+    const end = new Date(rangeEnd);
+    // Set to noon to avoid timezone rollover issues
+    current.setHours(12, 0, 0, 0);
+    end.setHours(12, 0, 0, 0);
+
+    while (current <= end) {
+        const y = current.getFullYear();
+        const m = String(current.getMonth() + 1).padStart(2, '0');
+        const d = String(current.getDate()).padStart(2, '0');
+        datesToAdd.push(`${y}-${m}-${d}`);
+        current.setDate(current.getDate() + 1);
+    }
+
+    setNewUnavailableDates(prev => {
+        const unique = new Set([...prev, ...datesToAdd]);
+        return Array.from(unique).sort();
+    });
+    setRangeStart('');
+    setRangeEnd('');
+  };
+
+  const removeUnavailableDate = (date: string) => {
+    setNewUnavailableDates(prev => prev.filter(d => d !== date));
+  };
+
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   return (
@@ -214,7 +274,7 @@ const EmployeeManager: React.FC<{
       {isAdding && (
         <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
           <h3 className="font-bold text-gray-800 mb-3">{editingId ? 'Edit Worker' : 'Add New Worker'}</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
             <div><label className="block text-sm font-medium mb-1">Name</label><input value={newName} onChange={e => setNewName(e.target.value)} className="w-full p-2 border rounded bg-white text-black" /></div>
             <div>
               <label className="block text-sm font-medium mb-1">Preference</label>
@@ -227,11 +287,52 @@ const EmployeeManager: React.FC<{
                <input type="number" min="0" value={newTargetShifts} onChange={e => setNewTargetShifts(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="Optional" />
             </div>
           </div>
-          <div className="mb-4">
-             <label className="block text-sm font-medium mb-2">Unavailable Days</label>
-             <div className="flex gap-2 flex-wrap">{days.map((d, i) => <button key={d} onClick={() => toggleDayOff(i)} className={`px-3 py-1 rounded-full text-sm border ${newDaysOff.includes(i) ? 'bg-red-100 text-red-700 border-red-200' : 'bg-white text-gray-600 border-gray-200'}`}>{d}</button>)}</div>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
+             {/* Weekly Availability */}
+             <div>
+                <label className="block text-sm font-medium mb-2">Weekly Recurring Days Off</label>
+                <div className="flex gap-2 flex-wrap">{days.map((d, i) => <button key={d} onClick={() => toggleDayOff(i)} className={`px-3 py-1 rounded-full text-sm border ${newDaysOff.includes(i) ? 'bg-red-100 text-red-700 border-red-200' : 'bg-white text-gray-600 border-gray-200'}`}>{d}</button>)}</div>
+             </div>
+             
+             {/* Specific Dates / Vacations */}
+             <div>
+                <label className="block text-sm font-medium mb-2 flex items-center gap-1"><Plane className="w-4 h-4 text-blue-500" /> Vacation / Unavailable Dates</label>
+                
+                {/* Inputs Wrapper */}
+                <div className="bg-white/50 border rounded-lg p-2 space-y-2 mb-2">
+                   {/* Single Date */}
+                   <div className="flex gap-2 items-center">
+                      <Calendar className="w-4 h-4 text-gray-400" />
+                      <input type="date" value={dateInput} onChange={e => setDateInput(e.target.value)} className="flex-1 p-1.5 border rounded text-xs bg-white text-black" />
+                      <button onClick={addUnavailableDate} className="bg-gray-100 text-gray-700 px-3 py-1.5 rounded text-xs font-bold hover:bg-gray-200 transition border">Add Single</button>
+                   </div>
+                   
+                   {/* Range */}
+                   <div className="flex gap-2 items-center">
+                      <CalendarRange className="w-4 h-4 text-gray-400" />
+                      <div className="flex items-center gap-1 flex-1">
+                          <input type="date" value={rangeStart} onChange={e => setRangeStart(e.target.value)} className="w-full p-1.5 border rounded text-xs bg-white text-black" placeholder="Start" />
+                          <span className="text-gray-400 text-xs">to</span>
+                          <input type="date" value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} className="w-full p-1.5 border rounded text-xs bg-white text-black" placeholder="End" />
+                      </div>
+                      <button onClick={addRange} className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded text-xs font-bold hover:bg-blue-200 transition border border-blue-200">Add Range</button>
+                   </div>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto border rounded p-2 bg-gray-50/50">
+                   {newUnavailableDates.length === 0 && <span className="text-gray-400 text-xs italic">No specific dates added</span>}
+                   {newUnavailableDates.map(date => (
+                      <span key={date} className="flex items-center gap-1 bg-white text-gray-700 px-2 py-0.5 rounded text-[10px] font-medium border border-gray-200 shadow-sm">
+                         {new Date(date).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })}
+                         <button onClick={() => removeUnavailableDate(date)} className="text-gray-400 hover:text-red-500"><X className="w-3 h-3" /></button>
+                      </span>
+                   ))}
+                </div>
+             </div>
           </div>
-          <div className="flex justify-end gap-2">
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-blue-100">
             <button onClick={resetForm} className="text-gray-500 hover:text-gray-700 px-4 py-2">Cancel</button>
             <button onClick={handleSave} className="bg-blue-600 text-white px-4 py-2 rounded-lg">{editingId ? 'Save' : 'Add'}</button>
           </div>
@@ -239,15 +340,21 @@ const EmployeeManager: React.FC<{
       )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {employees.map(e => (
-          <div key={e.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border hover:border-blue-200 transition">
-            <div>
-              <div className="font-semibold text-gray-900 flex gap-2 items-center">{e.name} {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Target: {e.targetShifts}</span>}</div>
-              <div className="text-xs text-gray-500 mt-1 flex gap-2">
+          <div key={e.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border hover:border-blue-200 transition group">
+            <div className="flex-1">
+              <div className="font-semibold text-gray-900 flex gap-2 items-center">
+                {e.name} 
+                {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Target: {e.targetShifts}</span>}
+              </div>
+              <div className="text-xs text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-1">
                 <span className={`px-2 py-0.5 rounded ${e.preference === WorkerPreference.DAY_ONLY ? 'bg-amber-100 text-amber-700' : e.preference === WorkerPreference.NIGHT_ONLY ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-200'}`}>{e.preference}</span>
-                {e.availability.daysOff.length > 0 && <span className="text-red-500">Off: {e.availability.daysOff.map(d => days[d]).join(', ')}</span>}
+                {e.availability.daysOff.length > 0 && <span className="text-red-500">Weekly: {e.availability.daysOff.map(d => days[d]).join(', ')}</span>}
+                {e.availability.unavailableDates && e.availability.unavailableDates.length > 0 && (
+                   <span className="text-blue-600 flex items-center gap-0.5"><Plane className="w-3 h-3" /> {e.availability.unavailableDates.length} days off</span>
+                )}
               </div>
             </div>
-            <div className="flex gap-1">
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
               <button onClick={() => startEditing(e)} className="p-2 text-gray-400 hover:text-blue-600 rounded-full"><Edit2 className="w-4 h-4" /></button>
               <button onClick={() => onRemove(e.id)} className="p-2 text-gray-400 hover:text-red-500 rounded-full"><Trash2 className="w-4 h-4" /></button>
             </div>
@@ -442,12 +549,12 @@ const ScheduleViewer: React.FC<{
 const App: React.FC = () => {
   const [tab, setTab] = useState<'workers' | 'rules' | 'schedule'>('workers');
   const [employees, setEmployees] = useState<Employee[]>([
-    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [] }, color: '#fff' },
-    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [] }, color: '#fff' },
-    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [] }, color: '#fff' },
-    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [] }, color: '#fff' },
-    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [] }, color: '#fff' },
-    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [] }, color: '#fff' },
+    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
   ]);
   const [config, setConfig] = useState<ShiftConfig>({
     dayStartTime: '06:00', dayEndTime: '15:00', nightStartTime: '14:00', nightEndTime: '00:00', distributeDayShiftsToEither: false,
@@ -482,8 +589,12 @@ const App: React.FC = () => {
       if (shift === ShiftType.DAY) d.dayShift = [...d.dayShift, empId]; else d.nightShift = [...d.nightShift, empId];
       updated.schedule[idx] = d;
       if (!d.isPadding) {
-         const st = { ...updated.stats[empId] }; st.totalShifts++; if(shift===ShiftType.DAY) st.dayShifts++; else st.nightShifts++;
-         updated.stats = { ...updated.stats, [empId]: st };
+         const st = { ...updated.stats[empId] }; 
+         if (st) {
+             st.totalShifts++; 
+             if(shift===ShiftType.DAY) st.dayShifts++; else st.nightShifts++;
+             updated.stats = { ...updated.stats, [empId]: st };
+         }
       }
       setVersions(p => p.map(v => v.id === updated.id ? updated : v));
     }
@@ -499,7 +610,6 @@ const App: React.FC = () => {
         alert("Failed to parse CSV. Make sure names match current employees.");
       }
     }
-    // Reset input
     if (e.target) e.target.value = '';
   };
 
@@ -509,7 +619,7 @@ const App: React.FC = () => {
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <h1 className="text-xl font-bold flex gap-2 items-center"><Calendar className="text-blue-400"/> ShiftMaster</h1>
           <nav className="flex gap-1 bg-slate-800 p-1 rounded-lg">
-             {['workers','rules','schedule'].map(t => <button key={t} onClick={() => setTab(t as any)} className={`px-4 py-2 rounded-md text-sm capitalize ${tab===t?'bg-blue-600 text-white':'text-slate-400 hover:text-white'}`}>{t}</button>)}
+             {['workers','rules','schedule'].map(t => <button key={t} onClick={() => setTab(t as any)} className={`px-4 py-2 rounded-md text-sm capitalize transition ${tab===t?'bg-blue-600 text-white shadow-lg shadow-blue-900/50':'text-slate-400 hover:text-white'}`}>{t}</button>)}
           </nav>
         </div>
       </header>
@@ -520,7 +630,7 @@ const App: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
              <div className="lg:col-span-3 space-y-6">
                 <div className="bg-white p-4 rounded-xl shadow border border-gray-100">
-                   <h3 className="font-bold mb-4 flex gap-2"><CheckCircle className="text-blue-600 w-4 h-4"/> Generate</h3>
+                   <h3 className="font-bold mb-4 flex gap-2 items-center"><CheckCircle className="text-blue-600 w-4 h-4"/> Generate</h3>
                    <div className="space-y-3 mb-4">
                       <div><label className="text-xs font-bold text-gray-500 uppercase">Month</label><select value={genMonth} onChange={e=>setGenMonth(parseInt(e.target.value))} className="w-full p-2 border rounded bg-gray-50 text-black">{Array.from({length:12}).map((_,i)=><option key={i} value={i}>{new Date(2000,i,1).toLocaleString('default',{month:'long'})}</option>)}</select></div>
                       <div><label className="text-xs font-bold text-gray-500 uppercase">Year</label><input type="number" value={genYear} onChange={e=>setGenYear(parseInt(e.target.value))} className="w-full p-2 border rounded bg-gray-50 text-black"/></div>
@@ -531,7 +641,7 @@ const App: React.FC = () => {
                    <div className="space-y-2 mb-4">
                        <button onClick={() => setHistoryModalOpen(true)} className="w-full text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 rounded flex justify-center items-center gap-2 border">
                           <History className="w-3 h-3" /> {manualHistory ? 'Edit Manual Context' : 'Set Manual Context'}
-                          {manualHistory && <span className="bg-green-500 w-2 h-2 rounded-full"></span>}
+                          {manualHistory && <span className="bg-green-500 w-2 h-2 rounded-full animate-pulse"></span>}
                        </button>
 
                        <button onClick={() => fileInputRef.current?.click()} className={`w-full text-xs py-2 rounded flex justify-center items-center gap-2 border transition-colors ${importedHistory ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}>
@@ -541,25 +651,26 @@ const App: React.FC = () => {
                        </button>
                    </div>
 
-                   <button onClick={handleGenerate} className="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700">Generate Schedule</button>
+                   <button onClick={handleGenerate} className="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 font-bold shadow-md shadow-blue-200 transition">Generate Schedule</button>
                 </div>
                 <div className="bg-white p-4 rounded-xl shadow border border-gray-100">
-                   <h3 className="font-bold mb-4 flex gap-2"><History className="text-gray-500 w-4 h-4"/> Versions</h3>
-                   <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                   <h3 className="font-bold mb-4 flex gap-2 items-center"><History className="text-gray-500 w-4 h-4"/> Versions</h3>
+                   <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
                       {versions.map(v => (
-                        <div key={v.id} onClick={()=>setSelectedVersionId(v.id)} className={`p-3 rounded-lg cursor-pointer border relative group ${selectedVersionId===v.id?'bg-blue-50 border-blue-200':'bg-gray-50 border-transparent hover:bg-gray-100'}`}>
+                        <div key={v.id} onClick={()=>setSelectedVersionId(v.id)} className={`p-3 rounded-lg cursor-pointer border relative group transition-all ${selectedVersionId===v.id?'bg-blue-50 border-blue-200 translate-x-1':'bg-gray-50 border-transparent hover:bg-gray-100'}`}>
                            <div className="text-sm font-medium">{v.name}</div>
-                           <button onClick={(e)=>{e.stopPropagation(); setVersions(p=>p.filter(ver=>ver.id!==v.id))}} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500"><Trash2 className="w-3 h-3"/></button>
+                           <div className="text-[10px] text-gray-400">{new Date(v.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                           <button onClick={(e)=>{e.stopPropagation(); setVersions(p=>p.filter(ver=>ver.id!==v.id))}} className="absolute top-3 right-2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition"><Trash2 className="w-3 h-3"/></button>
                         </div>
                       ))}
-                      {versions.length===0 && <div className="text-center text-xs text-gray-400">No versions yet</div>}
+                      {versions.length===0 && <div className="text-center text-xs text-gray-400 py-4">No versions generated yet</div>}
                    </div>
                 </div>
              </div>
              <div className="lg:col-span-9">
                 {currentVersion ? <ScheduleViewer version={currentVersion} employees={employees} config={config} onManualUpdate={handleManualAssign} /> : (
                   <div className="flex flex-col items-center justify-center p-12 bg-white rounded-xl border border-dashed border-gray-300 h-96">
-                    <Calendar className="w-12 h-12 text-blue-200 mb-4"/>
+                    <Calendar className="w-12 h-12 text-blue-200 mb-4 animate-bounce"/>
                     <h3 className="text-gray-900 font-medium">Ready to Schedule</h3>
                     <p className="text-gray-500 text-sm mt-1">Configure workers and click Generate</p>
                   </div>
