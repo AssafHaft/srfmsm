@@ -1,0 +1,584 @@
+
+import { 
+  Employee, 
+  ShiftConfig, 
+  DailySchedule, 
+  ShiftType, 
+  WorkerPreference, 
+  EmployeeStats,
+  ScheduleVersion,
+  HistoricalContext,
+  ManualHistoryInput
+} from '../types';
+
+// Helper to format date as YYYY-MM-DD
+export const formatDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+// Get the full grid range: Sunday before 1st to Saturday after last
+export const getFullWeeksRange = (year: number, month: number): Date[] => {
+  const days: Date[] = [];
+  
+  // 1. Find the 1st of the month
+  const startOfMonth = new Date(year, month, 1);
+  const startDayOfWeek = startOfMonth.getDay(); // 0 (Sun) - 6 (Sat)
+  
+  // 2. Backtrack to previous Sunday
+  const startDate = new Date(startOfMonth);
+  startDate.setDate(startDate.getDate() - startDayOfWeek);
+
+  // 3. Find the last day of the month
+  const endOfMonth = new Date(year, month + 1, 0);
+  const endDayOfWeek = endOfMonth.getDay();
+
+  // 4. Forward to next Saturday
+  const endDate = new Date(endOfMonth);
+  endDate.setDate(endDate.getDate() + (6 - endDayOfWeek));
+
+  // 5. Generate loop
+  const current = new Date(startDate);
+  while (current <= endDate) {
+    days.push(new Date(current));
+    current.setDate(current.getDate() + 1);
+  }
+
+  return days;
+};
+
+// Helper for generic month days
+export const getDaysInMonth = (year: number, month: number): Date[] => {
+  const date = new Date(year, month, 1);
+  const days: Date[] = [];
+  while (date.getMonth() === month) {
+    days.push(new Date(date));
+    date.setDate(date.getDate() + 1);
+  }
+  return days;
+};
+
+// --- Parsing History CSV ---
+export const parsePastScheduleCSV = async (file: File, employees: Employee[]): Promise<HistoricalContext> => {
+  const text = await file.text();
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+  
+  if (lines.length < 2) throw new Error("Invalid CSV format");
+
+  const headerLine = lines[0].replace(/^\uFEFF/, '');
+  const headers = headerLine.split(',');
+  
+  const dayCols: number[] = [];
+  const nightCols: number[] = [];
+
+  headers.forEach((h, idx) => {
+    const lower = h.toLowerCase().replace(/"/g, '');
+    if (lower.includes('day shift worker') || lower.includes('day worker')) dayCols.push(idx);
+    if (lower.includes('night shift worker') || lower.includes('night worker')) nightCols.push(idx);
+  });
+
+  const accumulatedStats: Record<string, { day: number, night: number, total: number }> = {};
+  const consecutiveDays: Record<string, number> = {};
+  let lastDayNightShiftIds: string[] = [];
+
+  employees.forEach(e => {
+    accumulatedStats[e.id] = { day: 0, night: 0, total: 0 };
+    consecutiveDays[e.id] = 0;
+  });
+
+  const findId = (nameRaw: string): string | undefined => {
+    const name = nameRaw.replace(/"/g, '').trim();
+    if (!name) return undefined;
+    return employees.find(e => e.name.toLowerCase() === name.toLowerCase())?.id;
+  };
+
+  for (let i = 1; i < lines.length; i++) {
+    // Robust CSV split ignoring commas inside quotes
+    const cells = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+    const cleanCells = cells.map(c => c.replace(/^"|"$/g, '').trim());
+
+    const workedTodayIds: string[] = [];
+    const nightTodayIds: string[] = [];
+
+    dayCols.forEach(colIdx => {
+      if (colIdx < cleanCells.length) {
+        const id = findId(cleanCells[colIdx]);
+        if (id) {
+          accumulatedStats[id].day++;
+          accumulatedStats[id].total++;
+          workedTodayIds.push(id);
+        }
+      }
+    });
+
+    nightCols.forEach(colIdx => {
+      if (colIdx < cleanCells.length) {
+        const id = findId(cleanCells[colIdx]);
+        if (id) {
+          accumulatedStats[id].night++;
+          accumulatedStats[id].total++;
+          workedTodayIds.push(id);
+          nightTodayIds.push(id);
+        }
+      }
+    });
+
+    employees.forEach(e => {
+      if (workedTodayIds.includes(e.id)) {
+        consecutiveDays[e.id] = (consecutiveDays[e.id] || 0) + 1;
+      } else {
+        consecutiveDays[e.id] = 0;
+      }
+    });
+
+    if (i === lines.length - 1) {
+      lastDayNightShiftIds = nightTodayIds;
+    }
+  }
+
+  return {
+    sourceName: file.name,
+    accumulatedStats,
+    consecutiveDaysEnding: consecutiveDays,
+    lastDayNightShiftIds
+  };
+};
+
+// --- Core Generation Function ---
+export const generateSchedule = (
+  employees: Employee[],
+  year: number,
+  month: number,
+  config: ShiftConfig,
+  history?: HistoricalContext,
+  manualHistory?: ManualHistoryInput
+): ScheduleVersion => {
+  const days = getFullWeeksRange(year, month);
+  const totalDaysInMonth = new Date(year, month + 1, 0).getDate(); // For pacing calc
+  const schedule: DailySchedule[] = [];
+  
+  const workHistory = new Map<string, Set<string>>();
+  const lastShiftType = new Map<string, ShiftType | null>();
+  const consecutiveDays = new Map<string, number>();
+  const stats = new Map<string, { day: number, night: number, total: number }>();
+  
+  // Initialize
+  employees.forEach(e => {
+    workHistory.set(e.id, new Set());
+    if (history) {
+       // IMPORTANT: Reset stats to 0 for the new month so quotas start fresh.
+       stats.set(e.id, { day: 0, night: 0, total: 0 });
+       
+       // Keep CONSTRAINTS from history (burnout/streaks)
+       consecutiveDays.set(e.id, history.consecutiveDaysEnding[e.id] || 0);
+       lastShiftType.set(e.id, null); 
+    } else {
+       stats.set(e.id, { day: 0, night: 0, total: 0 });
+       consecutiveDays.set(e.id, 0);
+       lastShiftType.set(e.id, null);
+    }
+  });
+
+  // --- WARMUP PHASE ---
+  // Iterate through the 7 days BEFORE the grid starts. 
+  // If Manual History exists for these days, we process them to set up "consecutiveDays" and "lastShiftType".
+  if (manualHistory && days.length > 0) {
+    const gridStart = days[0];
+    // Check up to 7 days before grid start
+    for (let i = 7; i > 0; i--) {
+        const d = new Date(gridStart);
+        d.setDate(d.getDate() - i);
+        const dateKey = formatDateKey(d);
+        const entry = manualHistory[dateKey];
+        
+        if (entry) {
+            const todayWorkers = [...entry.dayShift, ...entry.nightShift];
+            employees.forEach(e => {
+                if (todayWorkers.includes(e.id)) {
+                    consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
+                    workHistory.get(e.id)?.add(dateKey);
+                    
+                    if (entry.dayShift.includes(e.id)) lastShiftType.set(e.id, ShiftType.DAY);
+                    else lastShiftType.set(e.id, ShiftType.NIGHT);
+                } else {
+                    consecutiveDays.set(e.id, 0);
+                    lastShiftType.set(e.id, null);
+                }
+            });
+        }
+    }
+  }
+
+  // --- MAIN GRID GENERATION ---
+  for (let dayIndex = 0; dayIndex < days.length; dayIndex++) {
+    const dayDate = days[dayIndex];
+    const dateKey = formatDateKey(dayDate);
+    const dayOfWeek = dayDate.getDay();
+    const isTargetMonth = dayDate.getMonth() === month && dayDate.getFullYear() === year;
+    const isPadding = !isTargetMonth;
+
+    // Use current day number relative to target month (can be negative or > 31 for padding, but we clamp for pacing)
+    let pacingDayNum = dayDate.getDate();
+    if (dayDate.getMonth() < month) pacingDayNum = 0; // Pre-month
+    if (dayDate.getMonth() > month) pacingDayNum = totalDaysInMonth; // Post-month
+
+    const reqs = config.requirements[dayOfWeek] || { day: 1, night: 1 };
+    
+    // Check Manual History Overrides (for any day in the grid)
+    const manualEntry = manualHistory ? manualHistory[dateKey] : undefined;
+
+    let dayWorkers: string[] = [];
+    let nightWorkers: string[] = [];
+
+    if (manualEntry) {
+      // Use manually provided input (Frozen)
+      dayWorkers = manualEntry.dayShift;
+      nightWorkers = manualEntry.nightShift;
+    } else {
+      // Generate automatically
+      
+      // Determine forbidden workers for Day shift (Day After Night rule)
+      const forbiddenDayWorkers: string[] = [];
+      
+      // Check constraints against PREVIOUS DAY state
+      // (State is either from yesterday in loop, or from Warmup Phase, or from CSV history)
+      employees.forEach(e => {
+         const yesterdayDate = new Date(dayDate);
+         yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+         const yKey = formatDateKey(yesterdayDate);
+
+         // We check actual work history or Manual Input from yesterday
+         // Note: workHistory Set is populated as we go
+         if (lastShiftType.get(e.id) === ShiftType.NIGHT) {
+            // But we must verify they actually worked *yesterday* 
+            // (lastShiftType is sticky until reset on a day off, but consecutiveDays resets)
+            // safer check:
+             if (workHistory.get(e.id)?.has(yKey)) {
+                 forbiddenDayWorkers.push(e.id);
+             } else if (dayIndex === 0 && history && history.lastDayNightShiftIds.includes(e.id)) {
+                 // Fallback to CSV history if no Manual Input for day -1
+                 forbiddenDayWorkers.push(e.id);
+             }
+         }
+      });
+
+      // Day Shift
+      dayWorkers = pickWorkers(
+        employees,
+        reqs.day,
+        dayDate,
+        pacingDayNum,
+        totalDaysInMonth,
+        ShiftType.DAY,
+        workHistory,
+        lastShiftType,
+        consecutiveDays,
+        stats,
+        forbiddenDayWorkers, 
+        !!config.distributeDayShiftsToEither 
+      );
+      
+      // Night Shift
+      nightWorkers = pickWorkers(
+        employees,
+        reqs.night,
+        dayDate,
+        pacingDayNum,
+        totalDaysInMonth,
+        ShiftType.NIGHT,
+        workHistory,
+        lastShiftType,
+        consecutiveDays,
+        stats,
+        dayWorkers, 
+        false 
+      );
+    }
+
+    // --- Update Constraints & State ---
+    const todayWorkers = [...dayWorkers, ...nightWorkers];
+    
+    employees.forEach(e => {
+      const workedToday = todayWorkers.includes(e.id);
+      
+      if (workedToday) {
+        workHistory.get(e.id)?.add(dateKey);
+        consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
+        
+        if (dayWorkers.includes(e.id)) {
+          lastShiftType.set(e.id, ShiftType.DAY);
+        } else {
+          lastShiftType.set(e.id, ShiftType.NIGHT);
+        }
+
+        // Only update STATS (Fairness/Quota) if it's the target month!
+        // Padding days influence constraints (consecutive) but don't count towards the month's paycheck/quota.
+        // UNLESS it's a manual entry that explicitly falls into the target month.
+        if (isTargetMonth) {
+          const s = stats.get(e.id)!;
+          s.total += 1;
+          if (dayWorkers.includes(e.id)) s.day += 1;
+          else s.night += 1;
+        }
+
+      } else {
+        consecutiveDays.set(e.id, 0);
+        lastShiftType.set(e.id, null); 
+      }
+    });
+
+    schedule.push({
+      date: dateKey,
+      dayShift: dayWorkers,
+      nightShift: nightWorkers,
+      isPadding
+    });
+  }
+
+  // Calculate final stats for display (only counting non-padding days)
+  const finalStats: Record<string, EmployeeStats> = {};
+  
+  employees.forEach(e => {
+    let monthDay = 0;
+    let monthNight = 0;
+    let monthTotal = 0;
+    let maxStreak = 0;
+    let currentStreak = 0;
+    
+    schedule.forEach(daySch => {
+      // Streak calc considers padding days too (true exhaustion)
+      const worked = daySch.dayShift.includes(e.id) || daySch.nightShift.includes(e.id);
+      if (worked) {
+        currentStreak++;
+        maxStreak = Math.max(maxStreak, currentStreak);
+      } else {
+        currentStreak = 0;
+      }
+
+      // Counts only consider target month
+      if (!daySch.isPadding && worked) {
+        monthTotal++;
+        if (daySch.dayShift.includes(e.id)) monthDay++;
+        else monthNight++;
+      }
+    });
+
+    finalStats[e.id] = {
+      totalShifts: monthTotal,
+      dayShifts: monthDay,
+      nightShifts: monthNight,
+      longestStreak: maxStreak
+    };
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    timestamp: Date.now(),
+    name: `Schedule ${new Date(year, month).toLocaleString('default', { month: 'short' })} ${year}`,
+    month,
+    year,
+    schedule,
+    stats: finalStats
+  };
+};
+
+// Selection Logic
+function pickWorkers(
+  pool: Employee[],
+  count: number,
+  date: Date,
+  currentDayNum: number,
+  totalDays: number,
+  shiftType: ShiftType,
+  workHistory: Map<string, Set<string>>,
+  lastShiftType: Map<string, ShiftType | null>,
+  consecutiveDays: Map<string, number>,
+  stats: Map<string, { day: number, night: number, total: number }>,
+  excludeIds: string[],
+  prioritizeEitherForDay: boolean = false
+): string[] {
+  const candidates = pool.filter(e => {
+    if (excludeIds.includes(e.id)) return false;
+
+    // Preference
+    if (shiftType === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) return false;
+    if (shiftType === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) return false;
+
+    // Availability
+    if (e.availability.daysOff.includes(date.getDay())) return false;
+
+    // HARD CONSTRAINT: Max 5 consecutive
+    if ((consecutiveDays.get(e.id) || 0) >= 5) return false;
+
+    // HARD CONSTRAINT: No Day after Night
+    if (shiftType === ShiftType.DAY) {
+        const yesterday = new Date(date);
+        yesterday.setDate(date.getDate() - 1);
+        const yKey = formatDateKey(yesterday);
+        const workedYesterday = workHistory.get(e.id)?.has(yKey);
+        
+        if (workedYesterday && lastShiftType.get(e.id) === ShiftType.NIGHT) {
+            return false;
+        }
+    }
+
+    return true;
+  });
+
+  // Sort candidates
+  candidates.sort((a, b) => {
+    const statsA = stats.get(a.id)!;
+    const statsB = stats.get(b.id)!;
+    const targetA = a.targetShifts || 0;
+    const targetB = b.targetShifts || 0;
+    
+    // Priority 1: Met Target? (Deprioritize if yes)
+    const metTargetA = targetA > 0 && statsA.total >= targetA;
+    const metTargetB = targetB > 0 && statsB.total >= targetB;
+    if (metTargetA !== metTargetB) return metTargetA ? 1 : -1; 
+    
+    // Priority 2: Pacing (Even distribution over month)
+    const getPacingDiff = (empTarget: number, currentTotal: number) => {
+        if (empTarget <= 0) return 0;
+        const expected = empTarget * (Math.max(1, currentDayNum) / totalDays);
+        return currentTotal - expected;
+    };
+
+    const diffA = getPacingDiff(targetA, statsA.total);
+    const diffB = getPacingDiff(targetB, statsB.total);
+    
+    // Categorize: 
+    // 1 (Behind) = High Priority
+    // 2 (On Track) = Normal
+    // 3 (Ahead) = Low Priority
+    const getCategory = (diff: number, hasTarget: boolean) => {
+        if (!hasTarget) return 2; 
+        if (diff < -0.8) return 1; // Urgent catchup
+        if (diff > 0.8) return 3; // Cool down
+        return 2;
+    };
+
+    const catA = getCategory(diffA, targetA > 0);
+    const catB = getCategory(diffB, targetB > 0);
+    if (catA !== catB) return catA - catB;
+
+    // Priority 3: Fairness (Total Shifts)
+    let scoreA = statsA.total;
+    let scoreB = statsB.total;
+
+    if (prioritizeEitherForDay && shiftType === ShiftType.DAY) {
+        if (a.preference === WorkerPreference.EITHER) scoreA -= 2;
+        if (b.preference === WorkerPreference.EITHER) scoreB -= 2;
+    }
+
+    if (scoreA !== scoreB) return scoreA - scoreB;
+    
+    // Priority 4: Preference Balance
+    if (a.preference === WorkerPreference.EITHER && b.preference === WorkerPreference.EITHER) {
+        const aRatio = shiftType === ShiftType.DAY ? statsA.day : statsA.night;
+        const bRatio = shiftType === ShiftType.DAY ? statsB.day : statsB.night;
+        return aRatio - bRatio;
+    }
+
+    return Math.random() - 0.5;
+  });
+
+  return candidates.slice(0, count).map(e => e.id);
+}
+
+export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => {
+    let maxDay = 0;
+    let maxNight = 0;
+    version.schedule.forEach(s => {
+        maxDay = Math.max(maxDay, s.dayShift.length);
+        maxNight = Math.max(maxNight, s.nightShift.length);
+    });
+
+    const headers = ['Date', 'Is Padding'];
+    for(let i=0; i<maxDay; i++) headers.push(`Day Shift Worker ${i+1}`);
+    for(let i=0; i<maxNight; i++) headers.push(`Night Shift Worker ${i+1}`);
+    
+    let csvContent = "\uFEFF" + headers.join(",") + "\n";
+
+    version.schedule.forEach(row => {
+        const line = [row.date, row.isPadding ? 'Yes' : 'No'];
+        for(let i=0; i<maxDay; i++) {
+            const id = row.dayShift[i];
+            const name = id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+            line.push(`"${name.replace(/"/g, '""')}"`);
+        }
+        for(let i=0; i<maxNight; i++) {
+            const id = row.nightShift[i];
+            const name = id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+            line.push(`"${name.replace(/"/g, '""')}"`);
+        }
+        csvContent += line.join(",") + "\n";
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `schedule_${version.month + 1}_${version.year}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+};
+
+export const exportToExcel = (version: ScheduleVersion, employees: Employee[]) => {
+    let maxDay = 0;
+    let maxNight = 0;
+    version.schedule.forEach(s => {
+        maxDay = Math.max(maxDay, s.dayShift.length);
+        maxNight = Math.max(maxNight, s.nightShift.length);
+    });
+
+    const getName = (id: string | undefined) => id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+
+    let headerCells = `<th style="background-color:#e2e8f0; border:1px solid #94a3b8;">Date</th>`;
+    for(let i=0; i<maxDay; i++) headerCells += `<th style="background-color:#fef3c7; border:1px solid #94a3b8;">Day Worker ${i+1}</th>`;
+    for(let i=0; i<maxNight; i++) headerCells += `<th style="background-color:#e0e7ff; border:1px solid #94a3b8;">Night Worker ${i+1}</th>`;
+
+    let tableRows = '';
+    version.schedule.forEach(row => {
+        const bg = row.isPadding ? '#f1f5f9' : '#ffffff';
+        let rowCells = `<td style="border:1px solid #cbd5e1; background-color:${bg};">${row.date}${row.isPadding ? ' (Pad)' : ''}</td>`;
+        for(let i=0; i<maxDay; i++) {
+            rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.dayShift[i])}</td>`;
+        }
+        for(let i=0; i<maxNight; i++) {
+            rowCells += `<td style="border:1px solid #cbd5e1; background-color:${bg};">${getName(row.nightShift[i])}</td>`;
+        }
+        tableRows += `<tr>${rowCells}</tr>`;
+    });
+
+    const tableHtml = `
+      <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; color: #000;">
+        <thead><tr>${headerCells}</tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    `;
+
+    const template = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Schedule</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+      </head>
+      <body>${tableHtml}</body>
+      </html>
+    `;
+
+    const blob = new Blob([template], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `schedule_${version.month + 1}_${version.year}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+};

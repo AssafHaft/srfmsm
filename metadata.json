@@ -1,0 +1,5 @@
+{
+  "name": "ShiftMaster Scheduler",
+  "description": "A powerful automated shift scheduling application for managers to organize monthly rosters with hard and soft constraint management.",
+  "requestFramePermissions": []
+}
