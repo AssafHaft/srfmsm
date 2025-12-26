@@ -2,13 +2,13 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { 
   Users, Calendar, Settings, History, Plus, Trash2, Download, 
-  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info, Plane, CalendarRange
+  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info, Plane, CalendarRange, DollarSign, Clock
 } from 'lucide-react';
 import { 
   Employee, ShiftConfig, ScheduleVersion, WorkerPreference, 
-  ShiftType, HistoricalContext, ManualHistoryInput
+  ShiftType, HistoricalContext, ManualHistoryInput, DailyTiming
 } from './types';
-import { generateSchedule, exportToCSV, exportToExcel, getDaysInMonth, formatDateKey, parsePastScheduleCSV, getFullWeeksRange } from './services/scheduler';
+import { generateSchedule, exportToCSV, exportToExcel, getDaysInMonth, formatDateKey, parsePastScheduleCSV, getFullWeeksRange, calculatePayroll } from './services/scheduler';
 
 // --- Manual History Modal ---
 const ManualHistoryModal: React.FC<{
@@ -163,6 +163,7 @@ const EmployeeManager: React.FC<{
   const [newDaysOff, setNewDaysOff] = useState<number[]>([]);
   const [newUnavailableDates, setNewUnavailableDates] = useState<string[]>([]);
   const [newTargetShifts, setNewTargetShifts] = useState<string>('');
+  const [newHourlyRate, setNewHourlyRate] = useState<string>('');
   
   // Specific Date Inputs
   const [dateInput, setDateInput] = useState('');
@@ -175,6 +176,7 @@ const EmployeeManager: React.FC<{
     setNewDaysOff([]);
     setNewUnavailableDates([]);
     setNewTargetShifts('');
+    setNewHourlyRate('');
     setEditingId(null);
     setIsAdding(false);
     setDateInput('');
@@ -189,6 +191,7 @@ const EmployeeManager: React.FC<{
     setNewDaysOff(e.availability.daysOff);
     setNewUnavailableDates(e.availability.unavailableDates || []);
     setNewTargetShifts(e.targetShifts ? e.targetShifts.toString() : '');
+    setNewHourlyRate(e.hourlyRate ? e.hourlyRate.toString() : '');
     setEditingId(e.id);
     setIsAdding(true);
   };
@@ -196,6 +199,7 @@ const EmployeeManager: React.FC<{
   const handleSave = () => {
     if (!newName.trim()) return;
     const targetShifts = newTargetShifts ? parseInt(newTargetShifts) : undefined;
+    const hourlyRate = newHourlyRate ? parseFloat(newHourlyRate) : undefined;
     const employeeData = {
       name: newName, 
       preference: newPref, 
@@ -204,6 +208,7 @@ const EmployeeManager: React.FC<{
         unavailableDates: newUnavailableDates 
       }, 
       targetShifts,
+      hourlyRate,
     };
 
     if (editingId) {
@@ -239,7 +244,6 @@ const EmployeeManager: React.FC<{
     const datesToAdd: string[] = [];
     const current = new Date(rangeStart);
     const end = new Date(rangeEnd);
-    // Set to noon to avoid timezone rollover issues
     current.setHours(12, 0, 0, 0);
     end.setHours(12, 0, 0, 0);
 
@@ -285,6 +289,10 @@ const EmployeeManager: React.FC<{
             <div>
                <label className="block text-sm font-medium mb-1">Target Shifts</label>
                <input type="number" min="0" value={newTargetShifts} onChange={e => setNewTargetShifts(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="Optional" />
+            </div>
+            <div>
+               <label className="block text-sm font-medium mb-1">Hourly Rate (₪)</label>
+               <input type="number" min="0" step="0.5" value={newHourlyRate} onChange={e => setNewHourlyRate(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="e.g. 75" />
             </div>
           </div>
           
@@ -345,6 +353,7 @@ const EmployeeManager: React.FC<{
               <div className="font-semibold text-gray-900 flex gap-2 items-center">
                 {e.name} 
                 {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Target: {e.targetShifts}</span>}
+                {e.hourlyRate && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1 rounded">₪{e.hourlyRate}/h</span>}
               </div>
               <div className="text-xs text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-1">
                 <span className={`px-2 py-0.5 rounded ${e.preference === WorkerPreference.DAY_ONLY ? 'bg-amber-100 text-amber-700' : e.preference === WorkerPreference.NIGHT_ONLY ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-200'}`}>{e.preference}</span>
@@ -368,47 +377,149 @@ const EmployeeManager: React.FC<{
 // --- Config Panel ---
 const ConfigPanel: React.FC<{ config: ShiftConfig; onUpdate: (c: ShiftConfig) => void; }> = ({ config, onUpdate }) => {
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
   const updateReq = (dayIdx: number, shift: 'day' | 'night', val: number) => {
     const newReqs = { ...config.requirements };
     if (!newReqs[dayIdx]) newReqs[dayIdx] = { day: 1, night: 1 };
     newReqs[dayIdx] = { ...newReqs[dayIdx], [shift]: val };
     onUpdate({ ...config, requirements: newReqs });
   };
+
+  const updateTiming = (dayIdx: number, field: 'startTime' | 'endTime', val: string) => {
+    const newTimings = { ...config.dailyTimings };
+    if (!newTimings[dayIdx]) newTimings[dayIdx] = { startTime: '07:00', endTime: '22:00' };
+    newTimings[dayIdx] = { ...newTimings[dayIdx], [field]: val };
+    onUpdate({ ...config, dailyTimings: newTimings });
+  };
+
+  // Helper to display shift duration info
+  const getDurationInfo = (idx: number) => {
+    const t = config.dailyTimings[idx] || { startTime: '07:00', endTime: '22:00' };
+    const parse = (s: string) => { const [h, m] = s.split(':').map(Number); return h + m/60; };
+    let start = parse(t.startTime);
+    let end = parse(t.endTime);
+    if (end < start) end += 24;
+    const total = end - start;
+    const split = (total + 1) / 2;
+    return { total, split };
+  };
+
   return (
     <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-100">
       <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Settings className="w-5 h-5 text-blue-600" /> Shift Rules</h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div>
-           <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">Daily Requirements</h3>
-           <div className="space-y-3">
-             {days.map((day, idx) => {
-               const req = config.requirements[idx] || { day: 1, night: 1 };
-               return (
-                 <div key={day} className="flex items-center justify-between text-sm">
-                    <span className="w-24 font-medium text-gray-700">{day}</span>
-                    <div className="flex gap-4">
-                      <div className="flex items-center gap-2"><span className="text-amber-600 text-xs font-bold">DAY</span><input type="number" min="0" value={req.day} onChange={e => updateReq(idx, 'day', parseInt(e.target.value))} className="w-12 p-1 border rounded text-center bg-white text-black" /></div>
-                      <div className="flex items-center gap-2"><span className="text-indigo-600 text-xs font-bold">NIGHT</span><input type="number" min="0" value={req.night} onChange={e => updateReq(idx, 'night', parseInt(e.target.value))} className="w-12 p-1 border rounded text-center bg-white text-black" /></div>
-                    </div>
-                 </div>
-               );
-             })}
-           </div>
-        </div>
-        <div className="space-y-6">
-           <div className="bg-gray-50 p-4 rounded-lg">
-               <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Timing</h3>
-               <div className="grid grid-cols-2 gap-4">
-                 <div><label className="text-xs font-bold text-amber-600 block mb-1">Day Start</label><input type="time" value={config.dayStartTime} onChange={e => onUpdate({...config, dayStartTime: e.target.value})} className="w-full p-2 border rounded bg-white text-black" /></div>
-                 <div><label className="text-xs font-bold text-indigo-600 block mb-1">Night Start</label><input type="time" value={config.nightStartTime} onChange={e => onUpdate({...config, nightStartTime: e.target.value})} className="w-full p-2 border rounded bg-white text-black" /></div>
-               </div>
-           </div>
-           <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex items-start gap-3">
-               <button onClick={() => onUpdate({...config, distributeDayShiftsToEither: !config.distributeDayShiftsToEither})} className={`mt-0.5 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.distributeDayShiftsToEither ? 'bg-blue-600' : 'bg-gray-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${config.distributeDayShiftsToEither ? 'translate-x-6' : 'translate-x-1'}`} /></button>
-               <div><span className="block text-sm font-medium text-gray-900">Prioritize "Either" for Day Shifts</span></div>
-           </div>
-        </div>
+      
+      <div className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800">
+        <h4 className="font-bold flex items-center gap-2 mb-1"><Info className="w-4 h-4"/> How Shifts Are Calculated</h4>
+        <p>Morning and Night shifts split the operational window evenly with a <strong>1-hour overlap</strong>.</p>
+        <p className="mt-1">Example: 07:00 to 22:00 (15h total) → 8h Shifts (07:00-15:00 & 14:00-22:00).</p>
       </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm text-left">
+          <thead className="bg-gray-50 text-gray-500 font-medium">
+            <tr>
+              <th className="px-4 py-3">Day</th>
+              <th className="px-4 py-3">Operational Hours (Start - End)</th>
+              <th className="px-4 py-3">Requirements (Day / Night)</th>
+              <th className="px-4 py-3">Shift Duration</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {days.map((day, idx) => {
+               const req = config.requirements[idx] || { day: 1, night: 1 };
+               const time = config.dailyTimings[idx] || { startTime: '07:00', endTime: '22:00' };
+               const info = getDurationInfo(idx);
+               return (
+                 <tr key={day} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900 w-32">{day}</td>
+                    <td className="px-4 py-3">
+                       <div className="flex items-center gap-2">
+                          <input type="time" value={time.startTime} onChange={e => updateTiming(idx, 'startTime', e.target.value)} className="p-1.5 border rounded bg-white text-black" />
+                          <span className="text-gray-400">to</span>
+                          <input type="time" value={time.endTime} onChange={e => updateTiming(idx, 'endTime', e.target.value)} className="p-1.5 border rounded bg-white text-black" />
+                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-4">
+                        <div className="flex items-center gap-2"><span className="text-amber-600 text-xs font-bold">DAY</span><input type="number" min="0" value={req.day} onChange={e => updateReq(idx, 'day', parseInt(e.target.value))} className="w-12 p-1.5 border rounded text-center bg-white text-black" /></div>
+                        <div className="flex items-center gap-2"><span className="text-indigo-600 text-xs font-bold">NIGHT</span><input type="number" min="0" value={req.night} onChange={e => updateReq(idx, 'night', parseInt(e.target.value))} className="w-12 p-1.5 border rounded text-center bg-white text-black" /></div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                       {req.day + req.night === 1 ? (
+                         <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded font-bold">Solo: {info.total}h</span>
+                       ) : (
+                         <span className="text-xs bg-gray-100 px-2 py-1 rounded">Split: {info.split}h</span>
+                       )}
+                    </td>
+                 </tr>
+               );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-6 bg-gray-50 p-4 rounded-lg flex items-center justify-between">
+           <span className="text-sm font-medium text-gray-900">Prioritize "Either" Preference for Day Shifts</span>
+           <button onClick={() => onUpdate({...config, distributeDayShiftsToEither: !config.distributeDayShiftsToEither})} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.distributeDayShiftsToEither ? 'bg-blue-600' : 'bg-gray-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${config.distributeDayShiftsToEither ? 'translate-x-6' : 'translate-x-1'}`} /></button>
+      </div>
+    </div>
+  );
+};
+
+// --- Payroll Dashboard ---
+const PayrollDashboard: React.FC<{
+  version: ScheduleVersion;
+  employees: Employee[];
+  config: ShiftConfig;
+}> = ({ version, employees, config }) => {
+  const payrollData = calculatePayroll(version, employees, config);
+
+  return (
+    <div className="space-y-6">
+       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+             <h3 className="font-bold text-gray-800 flex items-center gap-2"><DollarSign className="w-5 h-5 text-green-600" /> Payroll Estimation</h3>
+             <div className="text-xs text-gray-500">Based on configured daily hours</div>
+          </div>
+          <div className="overflow-x-auto">
+             <table className="w-full text-sm text-left">
+                <thead className="bg-gray-50 text-gray-500 font-medium border-b">
+                   <tr>
+                     <th className="px-4 py-3">Employee</th>
+                     <th className="px-4 py-3">Rate</th>
+                     <th className="px-4 py-3 text-center">Regular (1x)</th>
+                     <th className="px-4 py-3 text-center">OT (1.25x)</th>
+                     <th className="px-4 py-3 text-center">Extra (1.5x)</th>
+                     <th className="px-4 py-3 text-center">Total Hours</th>
+                     <th className="px-4 py-3 text-right">Est. Pay</th>
+                   </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                   {employees.map(e => {
+                      const data = payrollData[e.id];
+                      if (!data || data.totalHours === 0) return null;
+                      return (
+                        <tr key={e.id} className="hover:bg-gray-50">
+                           <td className="px-4 py-3 font-medium text-gray-900">{e.name}</td>
+                           <td className="px-4 py-3 text-gray-500">{e.hourlyRate ? `₪${e.hourlyRate}` : '-'}</td>
+                           <td className="px-4 py-3 text-center text-gray-900">{data.regularHours.toFixed(1)}</td>
+                           <td className="px-4 py-3 text-center text-amber-600">{data.overtime125.toFixed(1)}</td>
+                           <td className="px-4 py-3 text-center text-red-600 font-bold">{data.overtime150.toFixed(1)}</td>
+                           <td className="px-4 py-3 text-center font-bold text-gray-900">{data.totalHours.toFixed(1)}</td>
+                           <td className="px-4 py-3 text-right font-bold text-green-700">
+                              {data.estimatedPay > 0 ? `₪${data.estimatedPay.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '-'}
+                           </td>
+                        </tr>
+                      );
+                   })}
+                   {employees.every(e => !payrollData[e.id] || payrollData[e.id].totalHours === 0) && (
+                      <tr><td colSpan={7} className="text-center py-4 text-gray-400">No shifts scheduled</td></tr>
+                   )}
+                </tbody>
+             </table>
+          </div>
+       </div>
     </div>
   );
 };
@@ -420,7 +531,7 @@ const ScheduleViewer: React.FC<{
   config: ShiftConfig;
   onManualUpdate: (date: string, shift: ShiftType, empId: string) => void;
 }> = ({ version, employees, config, onManualUpdate }) => {
-  const [view, setView] = useState<'calendar' | 'stats'>('calendar');
+  const [view, setView] = useState<'calendar' | 'stats' | 'payroll'>('calendar');
   const [modalOpen, setModalOpen] = useState(false);
   const [manualSlot, setManualSlot] = useState<{ date: string, shift: ShiftType } | null>(null);
   
@@ -438,13 +549,16 @@ const ScheduleViewer: React.FC<{
              <div className="flex bg-gray-100 rounded-lg p-1">
                 <button onClick={() => setView('calendar')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${view === 'calendar' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>Calendar</button>
                 <button onClick={() => setView('stats')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${view === 'stats' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>Stats</button>
+                <button onClick={() => setView('payroll')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${view === 'payroll' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>Payroll</button>
              </div>
              <button onClick={() => exportToCSV(version, employees)} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700"><Download className="w-4 h-4" /> CSV</button>
              <button onClick={() => exportToExcel(version, employees)} className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-emerald-700"><FileSpreadsheet className="w-4 h-4" /> Excel</button>
           </div>
        </div>
 
-       {view === 'calendar' ? (
+       {view === 'payroll' ? (
+          <PayrollDashboard version={version} employees={employees} config={config} />
+       ) : view === 'calendar' ? (
          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="grid grid-cols-7 bg-gray-50 border-b text-center py-2 text-xs font-bold text-gray-500 uppercase">
                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d}>{d}</div>)}
@@ -549,17 +663,32 @@ const ScheduleViewer: React.FC<{
 const App: React.FC = () => {
   const [tab, setTab] = useState<'workers' | 'rules' | 'schedule'>('workers');
   const [employees, setEmployees] = useState<Employee[]>([
-    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
-    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
-    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
-    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
-    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
-    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff' },
+    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
   ]);
+
+  // Default Daily Timings: 07:00 - 16:00 for all days (updated from 22:00)
+  const defaultTimings: Record<number, DailyTiming> = {};
+  for(let i=0; i<7; i++) defaultTimings[i] = { startTime: '07:00', endTime: '16:00' };
+
   const [config, setConfig] = useState<ShiftConfig>({
-    dayStartTime: '06:00', dayEndTime: '15:00', nightStartTime: '14:00', nightEndTime: '00:00', distributeDayShiftsToEither: false,
-    requirements: { 0: { day: 1, night: 1 }, 1: { day: 2, night: 1 }, 2: { day: 2, night: 1 }, 3: { day: 2, night: 1 }, 4: { day: 2, night: 2 }, 5: { day: 2, night: 2 }, 6: { day: 1, night: 1 } }
+    dailyTimings: defaultTimings,
+    distributeDayShiftsToEither: false,
+    requirements: { 
+      0: { day: 1, night: 2 }, // Sun
+      1: { day: 1, night: 1 }, // Mon
+      2: { day: 1, night: 2 }, // Tue
+      3: { day: 1, night: 1 }, // Wed
+      4: { day: 1, night: 2 }, // Thu
+      5: { day: 1, night: 1 }, // Fri
+      6: { day: 1, night: 2 }  // Sat
+    }
   });
+  
   const [versions, setVersions] = useState<ScheduleVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [genMonth, setGenMonth] = useState(new Date().getMonth());

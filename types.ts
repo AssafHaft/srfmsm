@@ -23,14 +23,18 @@ export interface Employee {
   preference: WorkerPreference;
   availability: Availability;
   targetShifts?: number; // Quota
+  hourlyRate?: number; // Pay rate
   color: string;
 }
 
+export interface DailyTiming {
+  startTime: string; // "07:00"
+  endTime: string;   // "22:00"
+}
+
 export interface ShiftConfig {
-  dayStartTime: string;
-  dayEndTime: string;
-  nightStartTime: string;
-  nightEndTime: string;
+  // Replaces global timings with per-day configuration (0=Sun, 6=Sat)
+  dailyTimings: Record<number, DailyTiming>;
   distributeDayShiftsToEither?: boolean;
   requirements: {
     [key: number]: {
@@ -60,6 +64,7 @@ export interface ScheduleVersion {
   name: string;
   month: number; // 0-11
   year: number;
+  configSnapshot?: ShiftConfig; // Store config used for this generation
   schedule: DailySchedule[];
   stats: Record<string, EmployeeStats>;
 }

@@ -60,6 +60,84 @@ export const getDaysInMonth = (year: number, month: number): Date[] => {
   return days;
 };
 
+// --- Payroll Calculation ---
+export interface PayrollData {
+  regularHours: number;
+  overtime125: number;
+  overtime150: number;
+  totalHours: number;
+  estimatedPay: number;
+}
+
+export const calculatePayroll = (
+  version: ScheduleVersion, 
+  employees: Employee[], 
+  currentConfig: ShiftConfig // Fallback if snapshot missing
+): Record<string, PayrollData> => {
+  const result: Record<string, PayrollData> = {};
+  
+  // Initialize
+  employees.forEach(e => {
+    result[e.id] = { regularHours: 0, overtime125: 0, overtime150: 0, totalHours: 0, estimatedPay: 0 };
+  });
+
+  const configToUse = version.configSnapshot || currentConfig;
+
+  version.schedule.forEach(day => {
+    if (day.isPadding) return; // Don't pay for padding days (belong to other months)
+
+    const dateObj = new Date(day.date);
+    const dayOfWeek = dateObj.getDay();
+    const timing = configToUse.dailyTimings[dayOfWeek] || { startTime: '07:00', endTime: '22:00' };
+    
+    // Parse Times
+    const parseTime = (t: string) => {
+      const [h, m] = t.split(':').map(Number);
+      return h + m / 60;
+    };
+    const start = parseTime(timing.startTime);
+    let end = parseTime(timing.endTime);
+    if (end < start) end += 24; // Handle overnight wrapping
+
+    const operationWindow = end - start;
+    
+    // Determine Shift Length Logic
+    const totalWorkersToday = day.dayShift.length + day.nightShift.length;
+    let shiftDuration = 0;
+
+    if (totalWorkersToday === 1) {
+      // Smart Single-Resource Assignment: Worker works the WHOLE day
+      shiftDuration = operationWindow;
+    } else {
+      // Split Shift: (TotalWindow + 1hr Overlap) / 2
+      shiftDuration = (operationWindow + 1) / 2;
+    }
+
+    // Calculate Tiers for this specific day
+    const reg = Math.min(shiftDuration, 8);
+    const remAfterReg = Math.max(0, shiftDuration - 8);
+    const ot125 = Math.min(remAfterReg, 2); // Hours 8 to 10
+    const ot150 = Math.max(0, remAfterReg - 2); // Hours 10+
+
+    // Apply to workers working today
+    const workersToday = new Set([...day.dayShift, ...day.nightShift]);
+    workersToday.forEach(empId => {
+      if (result[empId]) {
+        result[empId].regularHours += reg;
+        result[empId].overtime125 += ot125;
+        result[empId].overtime150 += ot150;
+        result[empId].totalHours += shiftDuration;
+        
+        const rate = employees.find(e => e.id === empId)?.hourlyRate || 0;
+        result[empId].estimatedPay += (reg * rate) + (ot125 * rate * 1.25) + (ot150 * rate * 1.5);
+      }
+    });
+  });
+
+  return result;
+};
+
+
 // --- Parsing History CSV ---
 export const parsePastScheduleCSV = async (file: File, employees: Employee[]): Promise<HistoricalContext> => {
   const text = await file.text();
@@ -257,37 +335,65 @@ export const generateSchedule = (
          }
       });
 
-      // Day Shift
-      dayWorkers = pickWorkers(
-        employees,
-        reqs.day,
-        dayDate,
-        workableDaysPassed,
-        totalWorkableDaysInMonth,
-        ShiftType.DAY,
-        workHistory,
-        lastShiftType,
-        consecutiveDays,
-        stats,
-        forbiddenDayWorkers, 
-        !!config.distributeDayShiftsToEither 
-      );
+      // Special Case: Total Req = 1 (Smart Single-Resource)
+      // Logic: If total required is 1, we just pick 1 person for DAY.
+      // The Payroll calculator knows that 1 person works the whole day.
+      // This prevents the system from assigning 1 Day and 0 Night (correct) but the person finishes early.
+      // We still assign them to "dayShift" array for storage, but effectively they are the solo worker.
       
-      // Night Shift
-      nightWorkers = pickWorkers(
-        employees,
-        reqs.night,
-        dayDate,
-        workableDaysPassed,
-        totalWorkableDaysInMonth,
-        ShiftType.NIGHT,
-        workHistory,
-        lastShiftType,
-        consecutiveDays,
-        stats,
-        dayWorkers, 
-        false 
-      );
+      const totalReq = reqs.day + reqs.night;
+      
+      if (totalReq === 1) {
+          // Solo assignment
+          dayWorkers = pickWorkers(
+            employees,
+            1,
+            dayDate,
+            workableDaysPassed,
+            totalWorkableDaysInMonth,
+            ShiftType.DAY, // Contextually day, but effectively whole day
+            workHistory,
+            lastShiftType,
+            consecutiveDays,
+            stats,
+            forbiddenDayWorkers,
+            !!config.distributeDayShiftsToEither
+          );
+          nightWorkers = []; // No separate night worker needed
+      } else {
+          // Standard Split assignment
+          // Day Shift
+          dayWorkers = pickWorkers(
+            employees,
+            reqs.day,
+            dayDate,
+            workableDaysPassed,
+            totalWorkableDaysInMonth,
+            ShiftType.DAY,
+            workHistory,
+            lastShiftType,
+            consecutiveDays,
+            stats,
+            forbiddenDayWorkers, 
+            !!config.distributeDayShiftsToEither 
+          );
+          
+          // Night Shift
+          nightWorkers = pickWorkers(
+            employees,
+            reqs.night,
+            dayDate,
+            workableDaysPassed,
+            totalWorkableDaysInMonth,
+            ShiftType.NIGHT,
+            workHistory,
+            lastShiftType,
+            consecutiveDays,
+            stats,
+            dayWorkers, 
+            false 
+          );
+      }
     }
 
     const todayWorkers = [...dayWorkers, ...nightWorkers];
@@ -340,6 +446,7 @@ export const generateSchedule = (
     name: `Schedule ${new Date(year, month).toLocaleString('default', { month: 'short' })} ${year}`,
     month,
     year,
+    configSnapshot: config,
     schedule,
     stats: finalStats
   };
@@ -360,6 +467,7 @@ function pickWorkers(
   excludeIds: string[],
   prioritizeEitherForDay: boolean = false
 ): string[] {
+  if (count <= 0) return [];
   const dateKey = formatDateKey(date);
   
   const candidates = pool.filter(e => {
