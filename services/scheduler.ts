@@ -102,15 +102,14 @@ export const calculatePayroll = (
     const operationWindow = end - start;
     
     // Determine Shift Length Logic
-    const totalWorkersToday = day.dayShift.length + day.nightShift.length;
     let shiftDuration = 0;
 
-    if (totalWorkersToday === 1) {
-      // Smart Single-Resource Assignment: Worker works the WHOLE day
-      shiftDuration = operationWindow;
-    } else {
-      // Split Shift: (TotalWindow + 1hr Overlap) / 2
+    if (day.dayShift.length > 0 && day.nightShift.length > 0) {
+      // Both shifts have workers: Split Shift: (TotalWindow + 1hr Overlap) / 2
       shiftDuration = (operationWindow + 1) / 2;
+    } else {
+      // Only one shift has workers (or none): Workers work the WHOLE day
+      shiftDuration = operationWindow;
     }
 
     // Calculate Tiers for this specific day

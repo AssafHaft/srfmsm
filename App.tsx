@@ -446,7 +446,9 @@ const ConfigPanel: React.FC<{ config: ShiftConfig; onUpdate: (c: ShiftConfig) =>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-gray-500">
-                       {req.day + req.night === 1 ? (
+                       {req.day === 0 && req.night === 0 ? (
+                         <span className="text-xs bg-gray-100 px-2 py-1 rounded text-gray-500">Off</span>
+                       ) : req.day === 0 || req.night === 0 ? (
                          <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded font-bold">Solo: {info.total}h</span>
                        ) : (
                          <span className="text-xs bg-gray-100 px-2 py-1 rounded">Split: {info.split}h</span>
