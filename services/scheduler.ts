@@ -19,6 +19,27 @@ export const formatDateKey = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
+// Parse YYYY-MM-DD as a LOCAL date. new Date('YYYY-MM-DD') parses as UTC,
+// which can shift the day-of-week in negative-offset timezones.
+export const parseDateKey = (key: string): Date => {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+const parseTime = (t: string): number => {
+  const [h, m] = t.split(':').map(Number);
+  return h + m / 60;
+};
+
+// Total operational hours for a given weekday under this config
+export const getOperationalWindow = (config: ShiftConfig, dayOfWeek: number): number => {
+  const timing = config.dailyTimings[dayOfWeek] || { startTime: '07:00', endTime: '22:00' };
+  const start = parseTime(timing.startTime);
+  let end = parseTime(timing.endTime);
+  if (end < start) end += 24; // Handle overnight wrapping
+  return end - start;
+};
+
 // Get the full grid range: Sunday before 1st to Saturday after last
 export const getFullWeeksRange = (year: number, month: number): Date[] => {
   const days: Date[] = [];
@@ -75,7 +96,8 @@ export const calculatePayroll = (
   currentConfig: ShiftConfig // Fallback if snapshot missing
 ): Record<string, PayrollData> => {
   const result: Record<string, PayrollData> = {};
-  
+  const rateById = new Map(employees.map(e => [e.id, e.hourlyRate || 0]));
+
   // Initialize
   employees.forEach(e => {
     result[e.id] = { regularHours: 0, overtime125: 0, overtime150: 0, totalHours: 0, estimatedPay: 0 };
@@ -86,20 +108,9 @@ export const calculatePayroll = (
   version.schedule.forEach(day => {
     if (day.isPadding) return; // Don't pay for padding days (belong to other months)
 
-    const dateObj = new Date(day.date);
+    const dateObj = parseDateKey(day.date);
     const dayOfWeek = dateObj.getDay();
-    const timing = configToUse.dailyTimings[dayOfWeek] || { startTime: '07:00', endTime: '22:00' };
-    
-    // Parse Times
-    const parseTime = (t: string) => {
-      const [h, m] = t.split(':').map(Number);
-      return h + m / 60;
-    };
-    const start = parseTime(timing.startTime);
-    let end = parseTime(timing.endTime);
-    if (end < start) end += 24; // Handle overnight wrapping
-
-    const operationWindow = end - start;
+    const operationWindow = getOperationalWindow(configToUse, dayOfWeek);
     
     // Determine Shift Length Logic
     let shiftDuration = 0;
@@ -127,7 +138,7 @@ export const calculatePayroll = (
         result[empId].overtime150 += ot150;
         result[empId].totalHours += shiftDuration;
         
-        const rate = employees.find(e => e.id === empId)?.hourlyRate || 0;
+        const rate = rateById.get(empId) || 0;
         result[empId].estimatedPay += (reg * rate) + (ot125 * rate * 1.25) + (ot150 * rate * 1.5);
       }
     });
@@ -230,28 +241,40 @@ export const generateSchedule = (
   month: number,
   config: ShiftConfig,
   history?: HistoricalContext,
-  manualHistory?: ManualHistoryInput
+  manualHistory?: ManualHistoryInput,
+  lockedEntries?: ManualHistoryInput // Days pinned by the user; kept verbatim and marked locked
 ): ScheduleVersion => {
   const days = getFullWeeksRange(year, month);
   const monthDays = getDaysInMonth(year, month);
   const schedule: DailySchedule[] = [];
-  
+
+  // Premium (weekend) days: more desirable shifts that must be spread evenly
+  const premiumDays = new Set(config.premiumDays ?? [5, 6]);
+
   const workHistory = new Map<string, Set<string>>();
   const lastShiftType = new Map<string, ShiftType | null>();
   const consecutiveDays = new Map<string, number>();
-  const stats = new Map<string, { day: number, night: number, total: number }>();
-  
+  const stats = new Map<string, { day: number, night: number, total: number, hours: number, premium: number }>();
+
   // availability tracking for fair pacing
   const totalWorkableDaysInMonth = new Map<string, number>();
   const workableDaysPassed = new Map<string, number>();
 
+  // Carry-over day/night imbalance from imported history: someone who worked
+  // mostly nights last month should lean toward days this month (clamped so
+  // one month can't dominate the next forever).
+  const historyBias = new Map<string, number>();
+
   // Initialize
   employees.forEach(e => {
     workHistory.set(e.id, new Set());
-    stats.set(e.id, { day: 0, night: 0, total: 0 });
+    stats.set(e.id, { day: 0, night: 0, total: 0, hours: 0, premium: 0 });
     consecutiveDays.set(e.id, history ? (history.consecutiveDaysEnding[e.id] || 0) : 0);
     lastShiftType.set(e.id, null);
     workableDaysPassed.set(e.id, 0);
+
+    const hist = history?.accumulatedStats[e.id];
+    historyBias.set(e.id, hist ? Math.max(-2, Math.min(2, hist.day - hist.night)) : 0);
 
     // Pre-calculate total workable days for this employee in the target month
     let count = 0;
@@ -310,7 +333,10 @@ export const generateSchedule = (
     }
 
     const reqs = config.requirements[dayOfWeek] || { day: 1, night: 1 };
-    const manualEntry = manualHistory ? manualHistory[dateKey] : undefined;
+    // Locked days take precedence: kept exactly as the user pinned them,
+    // but still feed constraint/fairness tracking below.
+    const lockedEntry = lockedEntries?.[dateKey];
+    const manualEntry = lockedEntry || (manualHistory ? manualHistory[dateKey] : undefined);
 
     let dayWorkers: string[] = [];
     let nightWorkers: string[] = [];
@@ -335,30 +361,35 @@ export const generateSchedule = (
       });
 
       // Special Case: Total Req = 1 (Smart Single-Resource)
-      // Logic: If total required is 1, we just pick 1 person for DAY.
-      // The Payroll calculator knows that 1 person works the whole day.
-      // This prevents the system from assigning 1 Day and 0 Night (correct) but the person finishes early.
-      // We still assign them to "dayShift" array for storage, but effectively they are the solo worker.
-      
+      // The solo worker covers the whole operational window; the Payroll
+      // calculator knows this. Keep the slot's original day/night identity so
+      // Night-Only workers stay eligible for solo night requirements and the
+      // calendar doesn't show a false "Empty" slot.
+
       const totalReq = reqs.day + reqs.night;
-      
+
       if (totalReq === 1) {
-          // Solo assignment
-          dayWorkers = pickWorkers(
+          const soloType = reqs.night === 1 ? ShiftType.NIGHT : ShiftType.DAY;
+          // A solo shift spans the whole window incl. morning hours, so
+          // workers coming off a night shift are excluded either way.
+          const picked = pickWorkers(
             employees,
             1,
             dayDate,
             workableDaysPassed,
             totalWorkableDaysInMonth,
-            ShiftType.DAY, // Contextually day, but effectively whole day
+            soloType,
             workHistory,
             lastShiftType,
             consecutiveDays,
             stats,
             forbiddenDayWorkers,
-            !!config.distributeDayShiftsToEither
+            soloType === ShiftType.DAY && !!config.distributeDayShiftsToEither,
+            historyBias,
+            premiumDays
           );
-          nightWorkers = []; // No separate night worker needed
+          dayWorkers = soloType === ShiftType.DAY ? picked : [];
+          nightWorkers = soloType === ShiftType.NIGHT ? picked : [];
       } else {
           // Standard Split assignment
           // Day Shift
@@ -373,10 +404,12 @@ export const generateSchedule = (
             lastShiftType,
             consecutiveDays,
             stats,
-            forbiddenDayWorkers, 
-            !!config.distributeDayShiftsToEither 
+            forbiddenDayWorkers,
+            !!config.distributeDayShiftsToEither,
+            historyBias,
+            premiumDays
           );
-          
+
           // Night Shift
           nightWorkers = pickWorkers(
             employees,
@@ -389,11 +422,20 @@ export const generateSchedule = (
             lastShiftType,
             consecutiveDays,
             stats,
-            dayWorkers, 
-            false 
+            dayWorkers,
+            false,
+            historyBias,
+            premiumDays
           );
       }
     }
+
+    // Hours actually worked today: split shifts share the window (+1h overlap),
+    // a solo shift covers the whole window. Mirrors the payroll calculation.
+    const operationWindow = getOperationalWindow(config, dayOfWeek);
+    const shiftDuration = (dayWorkers.length > 0 && nightWorkers.length > 0)
+      ? (operationWindow + 1) / 2
+      : operationWindow;
 
     const todayWorkers = [...dayWorkers, ...nightWorkers];
     employees.forEach(e => {
@@ -407,6 +449,8 @@ export const generateSchedule = (
         if (isTargetMonth) {
           const s = stats.get(e.id)!;
           s.total += 1;
+          s.hours += shiftDuration;
+          if (premiumDays.has(dayOfWeek)) s.premium += 1;
           if (dayWorkers.includes(e.id)) s.day += 1;
           else s.night += 1;
         }
@@ -416,7 +460,7 @@ export const generateSchedule = (
       }
     });
 
-    schedule.push({ date: dateKey, dayShift: dayWorkers, nightShift: nightWorkers, isPadding });
+    schedule.push({ date: dateKey, dayShift: dayWorkers, nightShift: nightWorkers, isPadding, locked: !!lockedEntry });
   }
 
   const finalStats: Record<string, EmployeeStats> = {};
@@ -462,13 +506,15 @@ function pickWorkers(
   workHistory: Map<string, Set<string>>,
   lastShiftType: Map<string, ShiftType | null>,
   consecutiveDays: Map<string, number>,
-  stats: Map<string, { day: number, night: number, total: number }>,
+  stats: Map<string, { day: number, night: number, total: number, hours: number, premium: number }>,
   excludeIds: string[],
-  prioritizeEitherForDay: boolean = false
+  prioritizeEitherForDay: boolean = false,
+  historyBias?: Map<string, number>,
+  premiumDays?: Set<number>
 ): string[] {
   if (count <= 0) return [];
   const dateKey = formatDateKey(date);
-  
+
   const candidates = pool.filter(e => {
     if (excludeIds.includes(e.id)) return false;
 
@@ -497,22 +543,33 @@ function pickWorkers(
     return true;
   });
 
+  // Shuffle BEFORE sorting so that genuine ties are broken randomly.
+  // (Array.prototype.sort is stable, so without this every tie resolves to
+  // employee-list order and Generate produces the identical schedule each
+  // click. Randomness must NOT live inside the comparator — an inconsistent
+  // comparator yields undefined, barely-varying orderings.)
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
   candidates.sort((a, b) => {
     const statsA = stats.get(a.id)!;
     const statsB = stats.get(b.id)!;
     const targetA = a.targetShifts || 0;
     const targetB = b.targetShifts || 0;
-    
+
+    // 1. Workers who already met their personal target go last
     const metTargetA = targetA > 0 && statsA.total >= targetA;
     const metTargetB = targetB > 0 && statsB.total >= targetB;
-    if (metTargetA !== metTargetB) return metTargetA ? 1 : -1; 
-    
-    // Prorated Pacing: Compare shifts worked to available shifts opportunity
+    if (metTargetA !== metTargetB) return metTargetA ? 1 : -1;
+
+    // 2. Prorated Pacing: Compare shifts worked to available shifts opportunity
     const getPacingDiff = (empId: string, empTarget: number, currentTotal: number) => {
         const totalWorkable = totalWorkableDaysInMonth.get(empId) || 0;
         const passedWorkable = workableDaysPassed.get(empId) || 0;
         if (empTarget <= 0 || totalWorkable === 0) return 0;
-        
+
         // Key logic: Expected shifts are proportional to MY actual availability
         const expected = empTarget * (passedWorkable / totalWorkable);
         return currentTotal - expected;
@@ -520,9 +577,9 @@ function pickWorkers(
 
     const diffA = getPacingDiff(a.id, targetA, statsA.total);
     const diffB = getPacingDiff(b.id, targetB, statsB.total);
-    
+
     const getCategory = (diff: number, hasTarget: boolean) => {
-        if (!hasTarget) return 2; 
+        if (!hasTarget) return 2;
         if (diff < -0.8) return 1; // Behind
         if (diff > 0.8) return 3;  // Ahead
         return 2; // On track
@@ -532,30 +589,40 @@ function pickWorkers(
     const catB = getCategory(diffB, targetB > 0);
     if (catA !== catB) return catA - catB;
 
-    let scoreA = statsA.total;
-    let scoreB = statsB.total;
-
-    // Tie-break: if no specific target, balance based on utilization rate
-    if (targetA === 0 && targetB === 0) {
-        const utilA = statsA.total / Math.max(1, workableDaysPassed.get(a.id) || 1);
-        const utilB = statsB.total / Math.max(1, workableDaysPassed.get(b.id) || 1);
-        if (Math.abs(utilA - utilB) > 0.01) return utilA - utilB;
+    // 3. Premium (weekend) fairness: on a premium day, prefer whoever has
+    // had fewer premium shifts. These better-paid slots are scarce, so their
+    // rotation outranks hour pacing here — hours re-balance on regular days.
+    if (premiumDays?.has(date.getDay()) && statsA.premium !== statsB.premium) {
+        return statsA.premium - statsB.premium;
     }
 
+    // 4. Hours fairness: hours worked relative to each worker's own
+    // availability so far. Shift counts alone hide the fact that solo days
+    // are much longer than split days.
+    const loadA = statsA.hours / Math.max(1, workableDaysPassed.get(a.id) || 1);
+    const loadB = statsB.hours / Math.max(1, workableDaysPassed.get(b.id) || 1);
+    if (Math.abs(loadA - loadB) > 0.05) return loadA - loadB;
+
+    // 5. Total shift count
+    let scoreA = statsA.total;
+    let scoreB = statsB.total;
     if (prioritizeEitherForDay && shiftType === ShiftType.DAY) {
         if (a.preference === WorkerPreference.EITHER) scoreA -= 2;
         if (b.preference === WorkerPreference.EITHER) scoreB -= 2;
     }
-
     if (scoreA !== scoreB) return scoreA - scoreB;
-    
-    if (a.preference === WorkerPreference.EITHER && b.preference === WorkerPreference.EITHER) {
-        const aRatio = shiftType === ShiftType.DAY ? statsA.day : statsA.night;
-        const bRatio = shiftType === ShiftType.DAY ? statsB.day : statsB.night;
-        return aRatio - bRatio;
-    }
 
-    return Math.random() - 0.5;
+    // 6. Day/night mix balance (including carry-over from imported history):
+    // for a day shift, prefer whoever has worked relatively more nights, and
+    // vice versa, so each person's day/night split stays even.
+    const biasA = historyBias?.get(a.id) || 0;
+    const biasB = historyBias?.get(b.id) || 0;
+    const mixA = shiftType === ShiftType.DAY ? (statsA.day - statsA.night + biasA) : (statsA.night - statsA.day - biasA);
+    const mixB = shiftType === ShiftType.DAY ? (statsB.day - statsB.night + biasB) : (statsB.night - statsB.day - biasB);
+    if (mixA !== mixB) return mixA - mixB;
+
+    // True tie: keep shuffled order (= random tie-break, consistent comparator)
+    return 0;
   });
 
   return candidates.slice(0, count).map(e => e.id);
@@ -568,21 +635,23 @@ export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => 
         maxNight = Math.max(maxNight, s.nightShift.length);
     });
 
+    const nameById = new Map(employees.map(e => [e.id, e.name]));
+
     const headers = ['Date', 'Is Padding'];
     for(let i=0; i<maxDay; i++) headers.push(`Day Shift Worker ${i+1}`);
     for(let i=0; i<maxNight; i++) headers.push(`Night Shift Worker ${i+1}`);
-    
+
     let csvContent = "\uFEFF" + headers.join(",") + "\n";
     version.schedule.forEach(row => {
         const line = [row.date, row.isPadding ? 'Yes' : 'No'];
         for(let i=0; i<maxDay; i++) {
             const id = row.dayShift[i];
-            const name = id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+            const name = id ? nameById.get(id) || 'Unknown' : '';
             line.push(`"${name.replace(/"/g, '""')}"`);
         }
         for(let i=0; i<maxNight; i++) {
             const id = row.nightShift[i];
-            const name = id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+            const name = id ? nameById.get(id) || 'Unknown' : '';
             line.push(`"${name.replace(/"/g, '""')}"`);
         }
         csvContent += line.join(",") + "\n";
@@ -606,7 +675,8 @@ export const exportToExcel = (version: ScheduleVersion, employees: Employee[]) =
         maxNight = Math.max(maxNight, s.nightShift.length);
     });
 
-    const getName = (id: string | undefined) => id ? employees.find(e => e.id === id)?.name || 'Unknown' : '';
+    const nameById = new Map(employees.map(e => [e.id, e.name]));
+    const getName = (id: string | undefined) => id ? nameById.get(id) || 'Unknown' : '';
     let headerCells = `<th style="background-color:#e2e8f0; border:1px solid #94a3b8;">Date</th>`;
     for(let i=0; i<maxDay; i++) headerCells += `<th style="background-color:#fef3c7; border:1px solid #94a3b8;">Day Worker ${i+1}</th>`;
     for(let i=0; i<maxNight; i++) headerCells += `<th style="background-color:#e0e7ff; border:1px solid #94a3b8;">Night Worker ${i+1}</th>`;

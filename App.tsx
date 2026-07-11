@@ -1,14 +1,43 @@
 
-import React, { useState, useMemo, useRef } from 'react';
-import { 
-  Users, Calendar, Settings, History, Plus, Trash2, Download, 
-  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info, Plane, CalendarRange, DollarSign, Clock
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  Users, Calendar, Settings, History, Plus, Trash2, Download,
+  CheckCircle, AlertCircle, FileSpreadsheet, Upload, Edit2, X, ChevronLeft, ChevronRight, Info, Plane, CalendarRange, DollarSign, Clock, Lock, Unlock, Star
 } from 'lucide-react';
-import { 
-  Employee, ShiftConfig, ScheduleVersion, WorkerPreference, 
+import {
+  Employee, ShiftConfig, ScheduleVersion, WorkerPreference,
   ShiftType, HistoricalContext, ManualHistoryInput, DailyTiming
 } from './types';
-import { generateSchedule, exportToCSV, exportToExcel, getDaysInMonth, formatDateKey, parsePastScheduleCSV, getFullWeeksRange, calculatePayroll } from './services/scheduler';
+import { generateSchedule, exportToCSV, exportToExcel, getDaysInMonth, formatDateKey, parseDateKey, parsePastScheduleCSV, getFullWeeksRange, calculatePayroll } from './services/scheduler';
+
+// Soft, high-contrast-text pastels for worker color coding
+const WORKER_PALETTE = [
+  '#fecaca', '#fed7aa', '#fde68a', '#d9f99d', '#a7f3d0',
+  '#a5f3fc', '#bfdbfe', '#c7d2fe', '#e9d5ff', '#fbcfe8'
+];
+const suggestWorkerColor = (employees: Employee[]): string =>
+  WORKER_PALETTE.find(c => !employees.some(e => e.color === c)) ||
+  WORKER_PALETTE[employees.length % WORKER_PALETTE.length];
+
+const ColorDot: React.FC<{ color?: string }> = ({ color }) => (
+  <span className="inline-block w-3 h-3 rounded-full border border-black/10 shrink-0" style={{ backgroundColor: color || '#e5e7eb' }} />
+);
+
+// Persist state to localStorage so a page refresh doesn't wipe workers,
+// rules, or generated schedule versions (GitHub Pages has no backend).
+function usePersistentState<T>(key: string, initial: T | (() => T)) {
+  const [state, setState] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) return JSON.parse(raw) as T;
+    } catch { /* corrupted or unavailable storage — fall back to defaults */ }
+    return typeof initial === 'function' ? (initial as () => T)() : initial;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* storage full/blocked */ }
+  }, [key, state]);
+  return [state, setState] as const;
+}
 
 // --- Manual History Modal ---
 const ManualHistoryModal: React.FC<{
@@ -19,14 +48,18 @@ const ManualHistoryModal: React.FC<{
   employees: Employee[];
   onSave: (data: ManualHistoryInput) => void;
 }> = ({ isOpen, onClose, year, month, employees, onSave }) => {
+  // Hooks must run unconditionally — declaring state after the early
+  // `if (!isOpen) return null` crashed React the first time the modal opened.
+  const [inputData, setInputData] = useState<ManualHistoryInput>({});
+
   if (!isOpen) return null;
 
   const gridDays = getFullWeeksRange(year, month);
   const gridStart = gridDays[0];
-  
-  const contextDates: Date[] = []; 
-  const scheduleDates: Date[] = []; 
-  
+
+  const contextDates: Date[] = [];
+  const scheduleDates: Date[] = [];
+
   for (let i = 7; i > 0; i--) {
       const d = new Date(gridStart);
       d.setDate(d.getDate() - i);
@@ -37,8 +70,6 @@ const ManualHistoryModal: React.FC<{
       d.setDate(d.getDate() + i);
       scheduleDates.push(d);
   }
-
-  const [inputData, setInputData] = useState<ManualHistoryInput>({});
 
   const toggleWorker = (dateKey: string, shift: 'dayShift' | 'nightShift', empId: string) => {
     setInputData(prev => {
@@ -164,7 +195,8 @@ const EmployeeManager: React.FC<{
   const [newUnavailableDates, setNewUnavailableDates] = useState<string[]>([]);
   const [newTargetShifts, setNewTargetShifts] = useState<string>('');
   const [newHourlyRate, setNewHourlyRate] = useState<string>('');
-  
+  const [newColor, setNewColor] = useState<string>(WORKER_PALETTE[0]);
+
   // Specific Date Inputs
   const [dateInput, setDateInput] = useState('');
   const [rangeStart, setRangeStart] = useState('');
@@ -184,7 +216,7 @@ const EmployeeManager: React.FC<{
     setRangeEnd('');
   };
 
-  const startAdding = () => { resetForm(); setIsAdding(true); };
+  const startAdding = () => { resetForm(); setNewColor(suggestWorkerColor(employees)); setIsAdding(true); };
   const startEditing = (e: Employee) => {
     setNewName(e.name);
     setNewPref(e.preference);
@@ -192,6 +224,7 @@ const EmployeeManager: React.FC<{
     setNewUnavailableDates(e.availability.unavailableDates || []);
     setNewTargetShifts(e.targetShifts ? e.targetShifts.toString() : '');
     setNewHourlyRate(e.hourlyRate ? e.hourlyRate.toString() : '');
+    setNewColor(e.color && e.color !== '#fff' ? e.color : suggestWorkerColor(employees));
     setEditingId(e.id);
     setIsAdding(true);
   };
@@ -215,13 +248,13 @@ const EmployeeManager: React.FC<{
       onUpdate({
         ...employeeData,
         id: editingId,
-        color: employees.find(e => e.id === editingId)?.color || '#fff'
+        color: newColor
       });
     } else {
       onAdd({
         ...employeeData,
         id: crypto.randomUUID(),
-        color: `hsl(${Math.floor(Math.random() * 360)}, 70%, 80%)`
+        color: newColor
       });
     }
     resetForm();
@@ -294,6 +327,17 @@ const EmployeeManager: React.FC<{
                <label className="block text-sm font-medium mb-1">Hourly Rate (₪)</label>
                <input type="number" min="0" step="0.5" value={newHourlyRate} onChange={e => setNewHourlyRate(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="e.g. 75" />
             </div>
+            <div>
+               <label className="block text-sm font-medium mb-1">Color</label>
+               <div className="flex items-center gap-2">
+                  <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)} className="w-10 h-10 p-0.5 border rounded bg-white cursor-pointer" title="Pick a custom color" />
+                  <div className="flex flex-wrap gap-1">
+                     {WORKER_PALETTE.map(c => (
+                        <button key={c} onClick={() => setNewColor(c)} className={`w-5 h-5 rounded-full border-2 ${newColor === c ? 'border-blue-500 scale-110' : 'border-transparent'}`} style={{ backgroundColor: c }} title={c} />
+                     ))}
+                  </div>
+               </div>
+            </div>
           </div>
           
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
@@ -351,7 +395,8 @@ const EmployeeManager: React.FC<{
           <div key={e.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border hover:border-blue-200 transition group">
             <div className="flex-1">
               <div className="font-semibold text-gray-900 flex gap-2 items-center">
-                {e.name} 
+                <ColorDot color={e.color} />
+                {e.name}
                 {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Target: {e.targetShifts}</span>}
                 {e.hourlyRate && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1 rounded">₪{e.hourlyRate}/h</span>}
               </div>
@@ -461,6 +506,29 @@ const ConfigPanel: React.FC<{ config: ShiftConfig; onUpdate: (c: ShiftConfig) =>
         </table>
       </div>
 
+      <div className="mt-6 bg-amber-50 p-4 rounded-lg border border-amber-100">
+           <div className="flex items-center gap-2 mb-1">
+              <Star className="w-4 h-4 text-amber-500" />
+              <span className="text-sm font-medium text-gray-900">Premium / Weekend Days (higher pay)</span>
+           </div>
+           <p className="text-xs text-gray-500 mb-3">These sought-after shifts are rotated evenly between workers.</p>
+           <div className="flex gap-2 flex-wrap">
+              {days.map((d, i) => {
+                 const premium = config.premiumDays ?? [5, 6];
+                 const active = premium.includes(i);
+                 return (
+                   <button
+                     key={d}
+                     onClick={() => onUpdate({ ...config, premiumDays: active ? premium.filter(x => x !== i) : [...premium, i].sort() })}
+                     className={`px-3 py-1 rounded-full text-sm border ${active ? 'bg-amber-100 text-amber-700 border-amber-300 font-bold' : 'bg-white text-gray-600 border-gray-200'}`}
+                   >
+                     {d.slice(0, 3)}
+                   </button>
+                 );
+              })}
+           </div>
+      </div>
+
       <div className="mt-6 bg-gray-50 p-4 rounded-lg flex items-center justify-between">
            <span className="text-sm font-medium text-gray-900">Prioritize "Either" Preference for Day Shifts</span>
            <button onClick={() => onUpdate({...config, distributeDayShiftsToEither: !config.distributeDayShiftsToEither})} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.distributeDayShiftsToEither ? 'bg-blue-600' : 'bg-gray-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${config.distributeDayShiftsToEither ? 'translate-x-6' : 'translate-x-1'}`} /></button>
@@ -503,7 +571,7 @@ const PayrollDashboard: React.FC<{
                       if (!data || data.totalHours === 0) return null;
                       return (
                         <tr key={e.id} className="hover:bg-gray-50">
-                           <td className="px-4 py-3 font-medium text-gray-900">{e.name}</td>
+                           <td className="px-4 py-3 font-medium text-gray-900"><span className="flex items-center gap-2"><ColorDot color={e.color} /> {e.name}</span></td>
                            <td className="px-4 py-3 text-gray-500">{e.hourlyRate ? `₪${e.hourlyRate}` : '-'}</td>
                            <td className="px-4 py-3 text-center text-gray-900">{data.regularHours.toFixed(1)}</td>
                            <td className="px-4 py-3 text-center text-amber-600">{data.overtime125.toFixed(1)}</td>
@@ -532,13 +600,48 @@ const ScheduleViewer: React.FC<{
   employees: Employee[];
   config: ShiftConfig;
   onManualUpdate: (date: string, shift: ShiftType, empId: string) => void;
-}> = ({ version, employees, config, onManualUpdate }) => {
+  onManualRemove: (date: string, shift: ShiftType, empId: string) => void;
+  onToggleLock: (date: string) => void;
+}> = ({ version, employees, config, onManualUpdate, onManualRemove, onToggleLock }) => {
   const [view, setView] = useState<'calendar' | 'stats' | 'payroll'>('calendar');
   const [modalOpen, setModalOpen] = useState(false);
   const [manualSlot, setManualSlot] = useState<{ date: string, shift: ShiftType } | null>(null);
-  
+
+  // Judge this schedule against the rules it was generated with, not the
+  // current (possibly edited) config.
+  const cfg = version.configSnapshot || config;
+
   const getEmp = (id: string) => employees.find(e => e.id === id);
   const openManualAssign = (date: string, shift: ShiftType) => { setManualSlot({ date, shift }); setModalOpen(true); };
+
+  // Eligibility hints for the manual-assignment modal
+  const getAssignmentWarnings = (e: Employee, date: string, shift: ShiftType): string[] => {
+    const warnings: string[] = [];
+    const d = parseDateKey(date);
+    if (e.availability.daysOff.includes(d.getDay())) warnings.push('Weekly day off');
+    if (e.availability.unavailableDates?.includes(date)) warnings.push('Unavailable / vacation');
+    if (shift === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) warnings.push('Prefers nights only');
+    if (shift === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) warnings.push('Prefers days only');
+    return warnings;
+  };
+  const isAlreadyAssigned = (empId: string, date: string): boolean => {
+    const day = version.schedule.find(s => s.date === date);
+    return !!day && (day.dayShift.includes(empId) || day.nightShift.includes(empId));
+  };
+
+  const payrollForStats = useMemo(() => calculatePayroll(version, employees, cfg), [version, employees, cfg]);
+
+  // Premium/weekend shifts per worker, computed from the live schedule so
+  // manual edits are reflected immediately.
+  const premiumDaySet = useMemo(() => new Set(cfg.premiumDays ?? [5, 6]), [cfg]);
+  const weekendCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    version.schedule.forEach(d => {
+      if (d.isPadding || !premiumDaySet.has(parseDateKey(d.date).getDay())) return;
+      [...d.dayShift, ...d.nightShift].forEach(id => { counts[id] = (counts[id] || 0) + 1; });
+    });
+    return counts;
+  }, [version, premiumDaySet]);
 
   return (
     <div className="space-y-6">
@@ -567,25 +670,52 @@ const ScheduleViewer: React.FC<{
             </div>
             <div className="grid grid-cols-7 auto-rows-fr bg-gray-200 gap-px">
                {version.schedule.map((daySch) => {
-                 const dateObj = new Date(daySch.date);
-                 const req = config.requirements[dateObj.getDay()] || { day: 1, night: 1 };
-                 const missingDay = req.day - daySch.dayShift.length;
-                 const missingNight = req.night - daySch.nightShift.length;
+                 const dateObj = parseDateKey(daySch.date);
+                 const req = cfg.requirements[dateObj.getDay()] || { day: 1, night: 1 };
+                 // A solo requirement (total 1) is covered whichever shift the
+                 // worker landed in — don't flag the other slot as empty.
+                 const soloCovered = (req.day + req.night === 1) && (daySch.dayShift.length + daySch.nightShift.length >= 1);
+                 const missingDay = soloCovered ? 0 : req.day - daySch.dayShift.length;
+                 const missingNight = soloCovered ? 0 : req.night - daySch.nightShift.length;
+
+                 const isPremiumDay = !daySch.isPadding && premiumDaySet.has(dateObj.getDay());
 
                  return (
-                   <div key={daySch.date} className={`min-h-[120px] p-2 flex flex-col gap-1 ${daySch.isPadding ? 'bg-gray-100' : 'bg-white'}`}>
-                      <div className={`text-right text-sm font-bold mb-1 ${daySch.isPadding ? 'text-gray-300' : 'text-gray-500'}`}>{dateObj.getDate()}</div>
-                      
+                   <div key={daySch.date} className={`group min-h-[120px] p-2 flex flex-col gap-1 ${daySch.isPadding ? 'bg-gray-100' : 'bg-white'} ${daySch.locked ? 'ring-2 ring-inset ring-blue-400' : ''}`}>
+                      <div className="flex justify-between items-center mb-1">
+                         {!daySch.isPadding ? (
+                           <button
+                             onClick={() => onToggleLock(daySch.date)}
+                             title={daySch.locked ? 'Unlock: allow this day to change on regenerate' : 'Lock: keep this day as-is when regenerating'}
+                             className={`transition ${daySch.locked ? 'text-blue-600' : 'text-gray-300 opacity-0 group-hover:opacity-100 hover:text-blue-500'}`}
+                           >
+                             {daySch.locked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                           </button>
+                         ) : <span />}
+                         <div className={`text-right text-sm font-bold flex items-center gap-1 ${daySch.isPadding ? 'text-gray-300' : 'text-gray-500'}`}>
+                            {isPremiumDay && <Star className="w-3 h-3 text-amber-400 fill-amber-300" />}
+                            {dateObj.getDate()}
+                         </div>
+                      </div>
+
                       {/* Day Shift */}
                       <div className="bg-amber-50 rounded p-1 border border-amber-100">
                          <div className="text-[10px] font-bold text-amber-600 uppercase mb-1">Day</div>
                          <div className="space-y-1">
                            {daySch.dayShift.map(id => (
-                             <div key={id} className={`text-xs px-1.5 py-0.5 rounded shadow-sm text-gray-700 truncate ${daySch.isPadding ? 'bg-gray-200 opacity-60' : 'bg-white'}`}>{getEmp(id)?.name}</div>
+                             <div key={id} className={`group/chip flex items-center justify-between text-xs px-1.5 py-0.5 rounded shadow-sm text-gray-800 ${daySch.isPadding ? 'bg-gray-200 opacity-60' : ''}`} style={daySch.isPadding ? undefined : { backgroundColor: getEmp(id)?.color || '#fff' }}>
+                               <span className="truncate">{getEmp(id)?.name}</span>
+                               {!daySch.isPadding && (
+                                 <button onClick={() => onManualRemove(daySch.date, ShiftType.DAY, id)} title="Remove from shift" className="opacity-0 group-hover/chip:opacity-100 text-gray-500 hover:text-red-600 shrink-0 ml-1"><X className="w-3 h-3" /></button>
+                               )}
+                             </div>
                            ))}
                            {!daySch.isPadding && missingDay > 0 && Array.from({length: missingDay}).map((_, i) => (
                                <button key={i} onClick={() => openManualAssign(daySch.date, ShiftType.DAY)} className="w-full text-left text-xs px-1.5 py-1 bg-red-100 text-red-700 rounded flex items-center gap-1 hover:bg-red-200"><AlertCircle className="w-3 h-3" /> Empty</button>
                            ))}
+                           {!daySch.isPadding && missingDay <= 0 && (
+                               <button onClick={() => openManualAssign(daySch.date, ShiftType.DAY)} title="Add extra day-shift worker" className="w-full text-center text-[10px] py-0.5 rounded text-amber-500 hover:bg-amber-100 opacity-0 group-hover:opacity-100 transition">+ Add</button>
+                           )}
                          </div>
                       </div>
                       {/* Night Shift */}
@@ -593,11 +723,19 @@ const ScheduleViewer: React.FC<{
                          <div className="text-[10px] font-bold text-indigo-600 uppercase mb-1">Night</div>
                          <div className="space-y-1">
                            {daySch.nightShift.map(id => (
-                             <div key={id} className={`text-xs px-1.5 py-0.5 rounded shadow-sm text-white truncate ${daySch.isPadding ? 'bg-indigo-300 opacity-60' : 'bg-indigo-700'}`}>{getEmp(id)?.name}</div>
+                             <div key={id} className={`group/chip flex items-center justify-between text-xs px-1.5 py-0.5 rounded shadow-sm text-gray-800 border-l-2 border-indigo-400 ${daySch.isPadding ? 'bg-gray-200 opacity-60' : ''}`} style={daySch.isPadding ? undefined : { backgroundColor: getEmp(id)?.color || '#fff' }}>
+                               <span className="truncate">{getEmp(id)?.name}</span>
+                               {!daySch.isPadding && (
+                                 <button onClick={() => onManualRemove(daySch.date, ShiftType.NIGHT, id)} title="Remove from shift" className="opacity-0 group-hover/chip:opacity-100 text-gray-500 hover:text-red-600 shrink-0 ml-1"><X className="w-3 h-3" /></button>
+                               )}
+                             </div>
                            ))}
                            {!daySch.isPadding && missingNight > 0 && Array.from({length: missingNight}).map((_, i) => (
                                <button key={i} onClick={() => openManualAssign(daySch.date, ShiftType.NIGHT)} className="w-full text-left text-xs px-1.5 py-1 bg-red-100 text-red-700 rounded flex items-center gap-1 hover:bg-red-200"><AlertCircle className="w-3 h-3" /> Empty</button>
                            ))}
+                           {!daySch.isPadding && missingNight <= 0 && (
+                               <button onClick={() => openManualAssign(daySch.date, ShiftType.NIGHT)} title="Add extra night-shift worker" className="w-full text-center text-[10px] py-0.5 rounded text-indigo-400 hover:bg-indigo-100 opacity-0 group-hover:opacity-100 transition">+ Add</button>
+                           )}
                          </div>
                       </div>
                    </div>
@@ -607,7 +745,7 @@ const ScheduleViewer: React.FC<{
          </div>
        ) : (
          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden p-6">
-            <h3 className="font-bold text-gray-800 mb-4">Analysis (Target Month Only)</h3>
+            <h3 className="font-bold text-gray-800 mb-4">Fairness Analysis (Target Month Only)</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
                  <thead className="bg-gray-50 text-gray-500 font-medium">
@@ -615,19 +753,36 @@ const ScheduleViewer: React.FC<{
                       <th className="px-4 py-3">Employee</th>
                       <th className="px-4 py-3 text-center">Day</th>
                       <th className="px-4 py-3 text-center">Night</th>
+                      <th className="px-4 py-3 text-center">Day/Night Mix</th>
                       <th className="px-4 py-3 text-center">Total</th>
+                      <th className="px-4 py-3 text-center">Hours</th>
+                      <th className="px-4 py-3 text-center"><span className="inline-flex items-center gap-1"><Star className="w-3 h-3 text-amber-400" /> Weekend</span></th>
+                      <th className="px-4 py-3 text-center">Longest Streak</th>
                       <th className="px-4 py-3 text-center">Target</th>
                     </tr>
                  </thead>
                  <tbody className="divide-y divide-gray-100">
                     {employees.map(emp => {
                        const stats = version.stats[emp.id] || { dayShifts: 0, nightShifts: 0, totalShifts: 0, longestStreak: 0 };
+                       const hours = payrollForStats[emp.id]?.totalHours || 0;
+                       const dayPct = stats.totalShifts > 0 ? Math.round((stats.dayShifts / stats.totalShifts) * 100) : 0;
+                       const mixSkewed = stats.totalShifts > 2 && emp.preference === WorkerPreference.EITHER && (dayPct <= 25 || dayPct >= 75);
                        return (
                          <tr key={emp.id} className="hover:bg-gray-50">
-                           <td className="px-4 py-3 font-medium text-gray-900">{emp.name}</td>
+                           <td className="px-4 py-3 font-medium text-gray-900"><span className="flex items-center gap-2"><ColorDot color={emp.color} /> {emp.name}</span></td>
                            <td className="px-4 py-3 text-center font-medium text-gray-900">{stats.dayShifts}</td>
                            <td className="px-4 py-3 text-center font-medium text-gray-900">{stats.nightShifts}</td>
+                           <td className="px-4 py-3 text-center">
+                              {stats.totalShifts > 0 ? (
+                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${mixSkewed ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>{dayPct}% day</span>
+                              ) : '-'}
+                           </td>
                            <td className="px-4 py-3 text-center font-bold bg-gray-50 text-gray-900">{stats.totalShifts}</td>
+                           <td className="px-4 py-3 text-center font-medium text-gray-900">{hours.toFixed(1)}</td>
+                           <td className="px-4 py-3 text-center font-medium text-amber-700">{weekendCounts[emp.id] || 0}</td>
+                           <td className="px-4 py-3 text-center">
+                              <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.longestStreak >= 5 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>{stats.longestStreak}d</span>
+                           </td>
                            <td className="px-4 py-3 text-center">
                               {emp.targetShifts ? (
                                 <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.totalShifts >= emp.targetShifts ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>{stats.totalShifts}/{emp.targetShifts}</span>
@@ -647,12 +802,28 @@ const ScheduleViewer: React.FC<{
             <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-900">Manual Assignment</h3><button onClick={() => setModalOpen(false)}><X className="w-5 h-5" /></button></div>
                <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                 {employees.map(e => (
-                   <button key={e.id} onClick={() => { onManualUpdate(manualSlot.date, manualSlot.shift, e.id); setModalOpen(false); }} className="w-full flex items-center justify-between p-3 rounded-lg border hover:bg-blue-50 text-left">
-                     <div><div className="font-medium text-gray-900">{e.name}</div><div className="text-xs text-gray-500">{e.preference}</div></div>
-                     {e.targetShifts && <div className="text-xs bg-gray-100 px-2 py-1 rounded">Target: {e.targetShifts}</div>}
-                   </button>
-                 ))}
+                 {employees.map(e => {
+                   const alreadyAssigned = isAlreadyAssigned(e.id, manualSlot.date);
+                   const warnings = getAssignmentWarnings(e, manualSlot.date, manualSlot.shift);
+                   return (
+                     <button
+                       key={e.id}
+                       disabled={alreadyAssigned}
+                       onClick={() => { onManualUpdate(manualSlot.date, manualSlot.shift, e.id); setModalOpen(false); }}
+                       className={`w-full flex items-center justify-between p-3 rounded-lg border text-left ${alreadyAssigned ? 'opacity-40 cursor-not-allowed bg-gray-50' : warnings.length > 0 ? 'border-amber-200 bg-amber-50/50 hover:bg-amber-50' : 'hover:bg-blue-50'}`}
+                     >
+                       <div>
+                         <div className="font-medium text-gray-900 flex items-center gap-2"><ColorDot color={e.color} /> {e.name}</div>
+                         <div className="text-xs text-gray-500">{e.preference}</div>
+                         {alreadyAssigned && <div className="text-xs text-gray-400 mt-0.5">Already assigned this date</div>}
+                         {!alreadyAssigned && warnings.length > 0 && (
+                           <div className="text-xs text-amber-600 mt-0.5 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {warnings.join(' · ')}</div>
+                         )}
+                       </div>
+                       {e.targetShifts && <div className="text-xs bg-gray-100 px-2 py-1 rounded shrink-0">Target: {e.targetShifts}</div>}
+                     </button>
+                   );
+                 })}
                </div>
             </div>
          </div>
@@ -664,20 +835,20 @@ const ScheduleViewer: React.FC<{
 // --- App ---
 const App: React.FC = () => {
   const [tab, setTab] = useState<'workers' | 'rules' | 'schedule'>('workers');
-  const [employees, setEmployees] = useState<Employee[]>([
-    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
-    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
-    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
-    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
-    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
-    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: '#fff', hourlyRate: 75 },
+  const [employees, setEmployees] = usePersistentState<Employee[]>('shiftmaster_employees', [
+    { id: '1', name: 'גולן חדד', preference: WorkerPreference.DAY_ONLY, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[0], hourlyRate: 75 },
+    { id: '2', name: 'ניצן כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[1], hourlyRate: 75 },
+    { id: '3', name: 'דן אהרוני', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[2], hourlyRate: 75 },
+    { id: '4', name: 'ענבר כפיר', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[3], hourlyRate: 75 },
+    { id: '5', name: 'רועי נוף', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[4], hourlyRate: 75 },
+    { id: '6', name: 'עומרי חכים', preference: WorkerPreference.EITHER, availability: { daysOff: [], unavailableDates: [] }, color: WORKER_PALETTE[5], hourlyRate: 75 },
   ]);
 
   // Default Daily Timings: 07:00 - 16:00 for all days (updated from 22:00)
   const defaultTimings: Record<number, DailyTiming> = {};
   for(let i=0; i<7; i++) defaultTimings[i] = { startTime: '07:00', endTime: '16:00' };
 
-  const [config, setConfig] = useState<ShiftConfig>({
+  const [config, setConfig] = usePersistentState<ShiftConfig>('shiftmaster_config', {
     dailyTimings: defaultTimings,
     distributeDayShiftsToEither: false,
     requirements: { 
@@ -691,8 +862,8 @@ const App: React.FC = () => {
     }
   });
   
-  const [versions, setVersions] = useState<ScheduleVersion[]>([]);
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [versions, setVersions] = usePersistentState<ScheduleVersion[]>('shiftmaster_versions', []);
+  const [selectedVersionId, setSelectedVersionId] = usePersistentState<string | null>('shiftmaster_selected_version', null);
   const [genMonth, setGenMonth] = useState(new Date().getMonth());
   const [genYear, setGenYear] = useState(new Date().getFullYear());
   const [manualHistory, setManualHistory] = useState<ManualHistoryInput | null>(null);
@@ -700,15 +871,98 @@ const App: React.FC = () => {
   const [importedHistory, setImportedHistory] = useState<HistoricalContext | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
 
   const currentVersion = useMemo(() => versions.find(v => v.id === selectedVersionId) || versions[0] || null, [versions, selectedVersionId]);
-  
+
+  // One-time migration: assign palette colors to workers saved before color
+  // coding existed (they carry the '#fff' placeholder).
+  useEffect(() => {
+    if (employees.some(e => !e.color || e.color === '#fff')) {
+      setEmployees(prev => prev.map((e, i) =>
+        (!e.color || e.color === '#fff') ? { ...e, color: WORKER_PALETTE[i % WORKER_PALETTE.length] } : e
+      ));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Locked days in the current version (for the same month) survive regeneration
+  const lockedDaysForGen = useMemo(() => {
+    if (!currentVersion || currentVersion.month !== genMonth || currentVersion.year !== genYear) return null;
+    const entries: ManualHistoryInput = {};
+    const validIds = new Set(employees.map(e => e.id));
+    currentVersion.schedule.forEach(d => {
+      if (d.locked && !d.isPadding) {
+        entries[d.date] = {
+          dayShift: d.dayShift.filter(id => validIds.has(id)),
+          nightShift: d.nightShift.filter(id => validIds.has(id))
+        };
+      }
+    });
+    return Object.keys(entries).length > 0 ? entries : null;
+  }, [currentVersion, genMonth, genYear, employees]);
+
   const handleGenerate = () => {
     if (employees.length === 0) { alert("No employees"); return; }
     try {
-      const v = generateSchedule(employees, genYear, genMonth, config, importedHistory || undefined, manualHistory || undefined);
-      setVersions(p => [v, ...p]); setSelectedVersionId(v.id); setTab('schedule');
+      const v = generateSchedule(employees, genYear, genMonth, config, importedHistory || undefined, manualHistory || undefined, lockedDaysForGen || undefined);
+      // Number the variations so multiple runs for the same month are
+      // distinguishable (computed inside the updater to avoid stale counts)
+      setVersions(p => {
+        const variation = p.filter(x => x.month === genMonth && x.year === genYear).length + 1;
+        return [{ ...v, name: `${v.name} · v${variation}` }, ...p];
+      });
+      setSelectedVersionId(v.id); setTab('schedule');
     } catch (e) { alert("Generation failed"); console.error(e); }
+  };
+
+  const handleToggleLock = (date: string) => {
+    if (!currentVersion) return;
+    const updated = {
+      ...currentVersion,
+      schedule: currentVersion.schedule.map(s => s.date === date ? { ...s, locked: !s.locked } : s)
+    };
+    setVersions(p => p.map(v => v.id === updated.id ? updated : v));
+  };
+
+  // --- JSON Backup / Restore ---
+  const handleBackup = () => {
+    const data = {
+      app: 'ShiftMaster',
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      employees, config, versions, selectedVersionId
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `shiftmaster_backup_${formatDateKey(new Date())}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.app !== 'ShiftMaster' || !Array.isArray(data.employees) || !data.config || !Array.isArray(data.versions)) {
+        alert('This file is not a valid ShiftMaster backup.');
+        return;
+      }
+      const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'unknown date';
+      if (!window.confirm(`Restore backup from ${when}?\nThis replaces the current workers, rules, and all schedule versions.`)) return;
+      setEmployees(data.employees);
+      setConfig(data.config);
+      setVersions(data.versions);
+      setSelectedVersionId(data.selectedVersionId ?? null);
+      alert('Backup restored.');
+    } catch {
+      alert('Could not read the backup file.');
+    }
   };
 
   const handleManualAssign = (date: string, shift: ShiftType, empId: string) => {
@@ -717,18 +971,42 @@ const App: React.FC = () => {
     const idx = updated.schedule.findIndex(s => s.date === date);
     if (idx > -1) {
       const d = { ...updated.schedule[idx] };
+      // Guard against double-assignment on the same date
+      if (d.dayShift.includes(empId) || d.nightShift.includes(empId)) return;
       if (shift === ShiftType.DAY) d.dayShift = [...d.dayShift, empId]; else d.nightShift = [...d.nightShift, empId];
       updated.schedule[idx] = d;
       if (!d.isPadding) {
-         const st = { ...updated.stats[empId] }; 
-         if (st) {
-             st.totalShifts++; 
-             if(shift===ShiftType.DAY) st.dayShifts++; else st.nightShifts++;
-             updated.stats = { ...updated.stats, [empId]: st };
-         }
+         // Employee may have been added after this version was generated
+         const st = { ...(updated.stats[empId] || { totalShifts: 0, dayShifts: 0, nightShifts: 0, longestStreak: 0 }) };
+         st.totalShifts++;
+         if (shift === ShiftType.DAY) st.dayShifts++; else st.nightShifts++;
+         updated.stats = { ...updated.stats, [empId]: st };
       }
       setVersions(p => p.map(v => v.id === updated.id ? updated : v));
     }
+  };
+
+  const handleManualRemove = (date: string, shift: ShiftType, empId: string) => {
+    if (!currentVersion) return;
+    const day = currentVersion.schedule.find(s => s.date === date);
+    if (!day) return;
+    const updated = {
+      ...currentVersion,
+      schedule: currentVersion.schedule.map(s => {
+        if (s.date !== date) return s;
+        return shift === ShiftType.DAY
+          ? { ...s, dayShift: s.dayShift.filter(id => id !== empId) }
+          : { ...s, nightShift: s.nightShift.filter(id => id !== empId) };
+      })
+    };
+    if (!day.isPadding && updated.stats[empId]) {
+      const st = { ...updated.stats[empId] };
+      st.totalShifts = Math.max(0, st.totalShifts - 1);
+      if (shift === ShiftType.DAY) st.dayShifts = Math.max(0, st.dayShifts - 1);
+      else st.nightShifts = Math.max(0, st.nightShifts - 1);
+      updated.stats = { ...updated.stats, [empId]: st };
+    }
+    setVersions(p => p.map(v => v.id === updated.id ? updated : v));
   };
 
   const handleImportHistory = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -749,9 +1027,16 @@ const App: React.FC = () => {
       <header className="bg-slate-900 text-white p-4 sticky top-0 z-20 shadow-md">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <h1 className="text-xl font-bold flex gap-2 items-center"><Calendar className="text-blue-400"/> ShiftMaster</h1>
-          <nav className="flex gap-1 bg-slate-800 p-1 rounded-lg">
-             {['workers','rules','schedule'].map(t => <button key={t} onClick={() => setTab(t as any)} className={`px-4 py-2 rounded-md text-sm capitalize transition ${tab===t?'bg-blue-600 text-white shadow-lg shadow-blue-900/50':'text-slate-400 hover:text-white'}`}>{t}</button>)}
-          </nav>
+          <div className="flex items-center gap-3">
+            <nav className="flex gap-1 bg-slate-800 p-1 rounded-lg">
+               {['workers','rules','schedule'].map(t => <button key={t} onClick={() => setTab(t as any)} className={`px-4 py-2 rounded-md text-sm capitalize transition ${tab===t?'bg-blue-600 text-white shadow-lg shadow-blue-900/50':'text-slate-400 hover:text-white'}`}>{t}</button>)}
+            </nav>
+            <div className="flex gap-1 border-l border-slate-700 pl-3">
+               <button onClick={handleBackup} title="Download full backup (workers, rules, schedules) as JSON" className="p-2 text-slate-400 hover:text-white transition"><Download className="w-4 h-4" /></button>
+               <button onClick={() => backupInputRef.current?.click()} title="Restore from a JSON backup" className="p-2 text-slate-400 hover:text-white transition"><Upload className="w-4 h-4" /></button>
+               <input type="file" ref={backupInputRef} accept=".json,application/json" className="hidden" onChange={handleRestore} />
+            </div>
+          </div>
         </div>
       </header>
       <main className="max-w-7xl mx-auto p-4 sm:p-6">
@@ -783,6 +1068,11 @@ const App: React.FC = () => {
                    </div>
 
                    <button onClick={handleGenerate} className="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 font-bold shadow-md shadow-blue-200 transition">Generate Schedule</button>
+                   {lockedDaysForGen && (
+                     <div className="text-[11px] text-blue-600 mt-2 flex items-center gap-1.5 bg-blue-50 rounded p-2 border border-blue-100">
+                        <Lock className="w-3 h-3 shrink-0" /> {Object.keys(lockedDaysForGen).length} locked day(s) will be kept as-is
+                     </div>
+                   )}
                 </div>
                 <div className="bg-white p-4 rounded-xl shadow border border-gray-100">
                    <h3 className="font-bold mb-4 flex gap-2 items-center"><History className="text-gray-500 w-4 h-4"/> Versions</h3>
@@ -799,7 +1089,7 @@ const App: React.FC = () => {
                 </div>
              </div>
              <div className="lg:col-span-9">
-                {currentVersion ? <ScheduleViewer version={currentVersion} employees={employees} config={config} onManualUpdate={handleManualAssign} /> : (
+                {currentVersion ? <ScheduleViewer version={currentVersion} employees={employees} config={config} onManualUpdate={handleManualAssign} onManualRemove={handleManualRemove} onToggleLock={handleToggleLock} /> : (
                   <div className="flex flex-col items-center justify-center p-12 bg-white rounded-xl border border-dashed border-gray-300 h-96">
                     <Calendar className="w-12 h-12 text-blue-200 mb-4 animate-bounce"/>
                     <h3 className="text-gray-900 font-medium">Ready to Schedule</h3>

@@ -36,6 +36,9 @@ export interface ShiftConfig {
   // Replaces global timings with per-day configuration (0=Sun, 6=Sat)
   dailyTimings: Record<number, DailyTiming>;
   distributeDayShiftsToEither?: boolean;
+  // Days of week (0=Sun..6=Sat) that count as premium/weekend shifts
+  // (higher pay, more desirable) and are distributed evenly. Default: Fri+Sat.
+  premiumDays?: number[];
   requirements: {
     [key: number]: {
       day: number;
@@ -49,6 +52,7 @@ export interface DailySchedule {
   dayShift: string[]; // Employee IDs
   nightShift: string[]; // Employee IDs
   isPadding?: boolean; // True if this day is outside the target month (prev/next month padding)
+  locked?: boolean; // Locked days are kept as-is when the schedule is regenerated
 }
 
 export interface ManualHistoryInput {
