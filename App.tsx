@@ -506,6 +506,51 @@ const ConfigPanel: React.FC<{ config: ShiftConfig; onUpdate: (c: ShiftConfig) =>
         </table>
       </div>
 
+      <div className="mt-6 bg-emerald-50 p-4 rounded-lg border border-emerald-100">
+           <div className="flex items-center gap-2 mb-1">
+              <Clock className="w-4 h-4 text-emerald-600" />
+              <span className="text-sm font-medium text-gray-900">Work Pattern & Limits</span>
+           </div>
+           <p className="text-xs text-gray-500 mb-3">Health and rest limits are hard rules the generator never breaks. Block mode builds continuous same-shift runs and rotates day/night in whole blocks for a predictable routine.</p>
+           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
+              <div>
+                 <label className="block text-xs font-medium text-gray-600 mb-1">Max consecutive work days</label>
+                 <input
+                   type="number" min="1" max="14"
+                   value={config.maxConsecutiveDays ?? 5}
+                   onChange={e => onUpdate({ ...config, maxConsecutiveDays: Math.max(1, parseInt(e.target.value) || 1) })}
+                   className="w-full p-2 border rounded bg-white text-black"
+                 />
+              </div>
+              <div>
+                 <label className="block text-xs font-medium text-gray-600 mb-1">Min rest days between blocks</label>
+                 <input
+                   type="number" min="1" max="7"
+                   value={config.minRestDays ?? 1}
+                   onChange={e => onUpdate({ ...config, minRestDays: Math.max(1, parseInt(e.target.value) || 1) })}
+                   className="w-full p-2 border rounded bg-white text-black"
+                 />
+              </div>
+              <div>
+                 <label className="block text-xs font-medium text-gray-600 mb-1">Max shifts per worker / month</label>
+                 <input
+                   type="number" min="0"
+                   value={config.maxShiftsPerMonth || ''}
+                   placeholder="No cap"
+                   onChange={e => onUpdate({ ...config, maxShiftsPerMonth: parseInt(e.target.value) || 0 })}
+                   className="w-full p-2 border rounded bg-white text-black"
+                 />
+              </div>
+           </div>
+           <div className="flex items-center justify-between bg-white/60 rounded-lg p-3 border border-emerald-100">
+              <div>
+                 <div className="text-sm font-medium text-gray-900">Consistent shift blocks</div>
+                 <div className="text-xs text-gray-500">Same shift type for a whole block (no day/night mixing), then rotate to the other type after rest</div>
+              </div>
+              <button onClick={() => onUpdate({ ...config, blockScheduling: !(config.blockScheduling ?? true) })} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0 ${(config.blockScheduling ?? true) ? 'bg-emerald-600' : 'bg-gray-200'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${(config.blockScheduling ?? true) ? 'translate-x-6' : 'translate-x-1'}`} /></button>
+           </div>
+      </div>
+
       <div className="mt-6 bg-amber-50 p-4 rounded-lg border border-amber-100">
            <div className="flex items-center gap-2 mb-1">
               <Star className="w-4 h-4 text-amber-500" />
@@ -622,6 +667,23 @@ const ScheduleViewer: React.FC<{
     if (e.availability.unavailableDates?.includes(date)) warnings.push('Unavailable / vacation');
     if (shift === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) warnings.push('Prefers nights only');
     if (shift === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) warnings.push('Prefers days only');
+
+    // Health / work-pattern rule checks against the adjacent days
+    const adjacent = (delta: number) => {
+      const ad = parseDateKey(date);
+      ad.setDate(ad.getDate() + delta);
+      return version.schedule.find(s => s.date === formatDateKey(ad));
+    };
+    const prevDay = adjacent(-1);
+    const nextDay = adjacent(1);
+    if (shift === ShiftType.DAY && prevDay?.nightShift.includes(e.id)) warnings.push('Day shift right after their night shift');
+    if (shift === ShiftType.NIGHT && nextDay?.dayShift.includes(e.id)) warnings.push('They work a day shift the next morning');
+    if (cfg.blockScheduling ?? true) {
+      const other = shift === ShiftType.DAY ? 'nightShift' : 'dayShift';
+      if (prevDay?.[other].includes(e.id) || nextDay?.[other].includes(e.id)) warnings.push('Mixes shift types within a block');
+    }
+    const cap = cfg.maxShiftsPerMonth || 0;
+    if (cap > 0 && (version.stats[e.id]?.totalShifts || 0) >= cap) warnings.push(`At monthly cap (${cap} shifts)`);
     return warnings;
   };
   const isAlreadyAssigned = (empId: string, date: string): boolean => {
@@ -781,7 +843,7 @@ const ScheduleViewer: React.FC<{
                            <td className="px-4 py-3 text-center font-medium text-gray-900">{hours.toFixed(1)}</td>
                            <td className="px-4 py-3 text-center font-medium text-amber-700">{weekendCounts[emp.id] || 0}</td>
                            <td className="px-4 py-3 text-center">
-                              <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.longestStreak >= 5 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>{stats.longestStreak}d</span>
+                              <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.longestStreak > (cfg.maxConsecutiveDays ?? 5) ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>{stats.longestStreak}d</span>
                            </td>
                            <td className="px-4 py-3 text-center">
                               {emp.targetShifts ? (

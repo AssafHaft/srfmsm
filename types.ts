@@ -39,6 +39,15 @@ export interface ShiftConfig {
   // Days of week (0=Sun..6=Sat) that count as premium/weekend shifts
   // (higher pay, more desirable) and are distributed evenly. Default: Fri+Sat.
   premiumDays?: number[];
+  // Hard cap on shifts one person may work in the scheduled month (0/undefined = no cap)
+  maxShiftsPerMonth?: number;
+  // Hard cap on consecutive work days per person (default 5)
+  maxConsecutiveDays?: number;
+  // Minimum full rest days required between two work blocks (default 1)
+  minRestDays?: number;
+  // Block scheduling: build continuous same-shift runs up to the consecutive
+  // cap and rotate day/night in whole blocks, for a predictable routine (default on)
+  blockScheduling?: boolean;
   requirements: {
     [key: number]: {
       day: number;
