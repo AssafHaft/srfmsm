@@ -320,8 +320,9 @@ const EmployeeManager: React.FC<{
               </select>
             </div>
             <div>
-               <label className="block text-sm font-medium mb-1">Target Shifts</label>
-               <input type="number" min="0" value={newTargetShifts} onChange={e => setNewTargetShifts(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="Optional" />
+               <label className="block text-sm font-medium mb-1">Max Shifts / Month</label>
+               <input type="number" min="0" value={newTargetShifts} onChange={e => setNewTargetShifts(e.target.value)} className="w-full p-2 border rounded bg-white text-black" placeholder="No limit" />
+               <div className="text-[10px] text-gray-500 mt-0.5">Hard cap — the generator never schedules beyond it</div>
             </div>
             <div>
                <label className="block text-sm font-medium mb-1">Hourly Rate (₪)</label>
@@ -397,7 +398,7 @@ const EmployeeManager: React.FC<{
               <div className="font-semibold text-gray-900 flex gap-2 items-center">
                 <ColorDot color={e.color} />
                 {e.name}
-                {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Target: {e.targetShifts}</span>}
+                {e.targetShifts && <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">Max: {e.targetShifts}</span>}
                 {e.hourlyRate && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1 rounded">₪{e.hourlyRate}/h</span>}
               </div>
               <div className="text-xs text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-1">
@@ -684,6 +685,8 @@ const ScheduleViewer: React.FC<{
     }
     const cap = cfg.maxShiftsPerMonth || 0;
     if (cap > 0 && (version.stats[e.id]?.totalShifts || 0) >= cap) warnings.push(`At monthly cap (${cap} shifts)`);
+    const personalCap = e.targetShifts || 0;
+    if (personalCap > 0 && (version.stats[e.id]?.totalShifts || 0) >= personalCap) warnings.push(`At their max shifts (${personalCap})`);
     return warnings;
   };
   const isAlreadyAssigned = (empId: string, date: string): boolean => {
@@ -820,7 +823,7 @@ const ScheduleViewer: React.FC<{
                       <th className="px-4 py-3 text-center">Hours</th>
                       <th className="px-4 py-3 text-center"><span className="inline-flex items-center gap-1"><Star className="w-3 h-3 text-amber-400" /> Weekend</span></th>
                       <th className="px-4 py-3 text-center">Longest Streak</th>
-                      <th className="px-4 py-3 text-center">Target</th>
+                      <th className="px-4 py-3 text-center">Cap</th>
                     </tr>
                  </thead>
                  <tbody className="divide-y divide-gray-100">
@@ -847,7 +850,7 @@ const ScheduleViewer: React.FC<{
                            </td>
                            <td className="px-4 py-3 text-center">
                               {emp.targetShifts ? (
-                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.totalShifts >= emp.targetShifts ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>{stats.totalShifts}/{emp.targetShifts}</span>
+                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${stats.totalShifts > emp.targetShifts ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>{stats.totalShifts}/{emp.targetShifts}</span>
                               ) : '-'}
                            </td>
                          </tr>
@@ -882,7 +885,7 @@ const ScheduleViewer: React.FC<{
                            <div className="text-xs text-amber-600 mt-0.5 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {warnings.join(' · ')}</div>
                          )}
                        </div>
-                       {e.targetShifts && <div className="text-xs bg-gray-100 px-2 py-1 rounded shrink-0">Target: {e.targetShifts}</div>}
+                       {e.targetShifts && <div className="text-xs bg-gray-100 px-2 py-1 rounded shrink-0">Max: {e.targetShifts}</div>}
                      </button>
                    );
                  })}

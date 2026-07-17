@@ -506,14 +506,18 @@ interface SelectionEnv {
 
 // Priority order (hard constraints filter first, then soft ranking):
 //   HARD — health & limits, never traded away: availability, vacations,
-//     monthly shift cap, max consecutive days, no day shift after a night
-//     shift, minimum rest between blocks, and (in block mode) no shift-type
-//     change inside a block.
-//   SOFT — 1. personal target not yet met  2. continue an active block
-//     (predictable routine)  3. target pacing  4. premium-day rotation
-//     5. hours load vs own availability  6. total shifts  7. rotate fresh
-//     starters to the opposite type of their previous block  8. day/night
-//     mix  9. random among true ties.
+//     monthly shift cap AND per-worker max-shifts cap, max consecutive days,
+//     no day shift after a night shift, minimum rest between blocks, and
+//     (in block mode) no shift-type change inside a block.
+//   STRUCTURAL (block mode) — an "Either" worker starting a NEW block must
+//     rotate to the opposite type of their previous block; same-type
+//     restarts are a last resort used only when nobody rotation-compliant
+//     can fill the slot. Combined with forced block boundaries at the
+//     consecutive cap, this alternates day/night blocks per worker instead
+//     of locking anyone into one type.
+//   SOFT — 1. continue an active block (predictable routine)  2. target
+//     pacing  3. premium-day rotation  4. hours load vs own availability
+//     5. total shifts  6. day/night mix  7. random among true ties.
 function pickWorkers(
   pool: Employee[],
   count: number,
@@ -536,24 +540,33 @@ function pickWorkers(
   // Workers currently mid-block (worked yesterday, compatible shift type)
   const continuing = new Set<string>();
 
-  const candidates = pool.filter(e => {
-    if (excludeIds.includes(e.id)) return false;
+  // Rotation-compliant candidates vs. last-resort ones (fresh "Either"
+  // workers who would restart the SAME shift type as their previous block).
+  const primary: Employee[] = [];
+  const lastResort: Employee[] = [];
+
+  pool.forEach(e => {
+    if (excludeIds.includes(e.id)) return;
 
     // Preference
-    if (shiftType === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) return false;
-    if (shiftType === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) return false;
+    if (shiftType === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) return;
+    if (shiftType === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) return;
 
     // Weekly Availability (Days of Week)
-    if (e.availability.daysOff.includes(date.getDay())) return false;
+    if (e.availability.daysOff.includes(date.getDay())) return;
 
     // Specific Unavailability (Vacations/Dates)
-    if (e.availability.unavailableDates?.includes(dateKey)) return false;
+    if (e.availability.unavailableDates?.includes(dateKey)) return;
 
     // HARD (health): max consecutive work days
-    if ((env.consecutiveDays.get(e.id) || 0) >= rules.maxConsecutive) return false;
+    if ((env.consecutiveDays.get(e.id) || 0) >= rules.maxConsecutive) return;
 
     // HARD (limit): monthly shift cap
-    if (rules.shiftCap > 0 && (stats.get(e.id)?.total || 0) >= rules.shiftCap) return false;
+    if (rules.shiftCap > 0 && (stats.get(e.id)?.total || 0) >= rules.shiftCap) return;
+
+    // HARD (limit): per-worker max-shifts cap ("Max Shifts" on the profile)
+    const personalCap = e.targetShifts || 0;
+    if (personalCap > 0 && (stats.get(e.id)?.total || 0) >= personalCap) return;
 
     const gap = dayIndex - (env.lastWorkedDayIndex.get(e.id) ?? -999);
     const workedYesterday = gap === 1 || !!env.workHistory.get(e.id)?.has(yKey);
@@ -561,16 +574,25 @@ function pickWorkers(
 
     if (workedYesterday) {
       // HARD (health): never a day shift (or whole-day solo) right after a night shift
-      if (last === ShiftType.NIGHT && (shiftType === ShiftType.DAY || wholeDay)) return false;
+      if (last === ShiftType.NIGHT && (shiftType === ShiftType.DAY || wholeDay)) return;
       // HARD (consistency): in block mode, no shift-type change inside a block
-      if (rules.blockMode && last !== null && last !== shiftType) return false;
+      if (rules.blockMode && last !== null && last !== shiftType) return;
       continuing.add(e.id);
     } else {
       // HARD (health): finish the minimum rest before starting a new block
-      if (gap > 1 && gap - 1 < rules.minRest) return false;
+      if (gap > 1 && gap - 1 < rules.minRest) return;
     }
 
-    return true;
+    // STRUCTURAL (block mode): a fresh "Either" worker must rotate to the
+    // opposite type of their previous block. Same-type restarts are kept as
+    // a last resort so slots do not go unfilled in small teams.
+    const rotationBlocked = rules.blockMode &&
+      !continuing.has(e.id) &&
+      e.preference === WorkerPreference.EITHER &&
+      prevBlockType.get(e.id) !== null &&
+      prevBlockType.get(e.id) === shiftType;
+
+    (rotationBlocked ? lastResort : primary).push(e);
   });
 
   // Shuffle BEFORE sorting so that genuine ties are broken randomly.
@@ -578,23 +600,22 @@ function pickWorkers(
   // employee-list order and Generate produces the identical schedule each
   // click. Randomness must NOT live inside the comparator — an inconsistent
   // comparator yields undefined, barely-varying orderings.)
-  for (let i = candidates.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-  }
+  const shuffle = (arr: Employee[]) => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+  };
+  shuffle(primary);
+  shuffle(lastResort);
 
-  candidates.sort((a, b) => {
+  const compare = (a: Employee, b: Employee): number => {
     const statsA = stats.get(a.id)!;
     const statsB = stats.get(b.id)!;
     const targetA = a.targetShifts || 0;
     const targetB = b.targetShifts || 0;
 
-    // 1. Workers who already met their personal target go last
-    const metTargetA = targetA > 0 && statsA.total >= targetA;
-    const metTargetB = targetB > 0 && statsB.total >= targetB;
-    if (metTargetA !== metTargetB) return metTargetA ? 1 : -1;
-
-    // 2. Block continuation: keep an active block going rather than starting
+    // 1. Block continuation: keep an active block going rather than starting
     // someone new — an uninterrupted same-shift run is the most predictable
     // routine for the worker.
     if (rules.blockMode) {
@@ -603,7 +624,7 @@ function pickWorkers(
         if (contA !== contB) return contA - contB;
     }
 
-    // 3. Prorated Pacing: Compare shifts worked to available shifts opportunity
+    // 2. Prorated Pacing: Compare shifts worked to available shifts opportunity
     const getPacingDiff = (empId: string, empTarget: number, currentTotal: number) => {
         const totalWorkable = env.totalWorkableDaysInMonth.get(empId) || 0;
         const passedWorkable = env.workableDaysPassed.get(empId) || 0;
@@ -628,21 +649,21 @@ function pickWorkers(
     const catB = getCategory(diffB, targetB > 0);
     if (catA !== catB) return catA - catB;
 
-    // 4. Premium (weekend) fairness: on a premium day, prefer whoever has
+    // 3. Premium (weekend) fairness: on a premium day, prefer whoever has
     // had fewer premium shifts. These better-paid slots are scarce, so their
     // rotation outranks hour pacing here — hours re-balance on regular days.
     if (premiumDays.has(date.getDay()) && statsA.premium !== statsB.premium) {
         return statsA.premium - statsB.premium;
     }
 
-    // 5. Hours fairness: hours worked relative to each worker's own
+    // 4. Hours fairness: hours worked relative to each worker's own
     // availability so far. Shift counts alone hide the fact that solo days
     // are much longer than split days.
     const loadA = statsA.hours / Math.max(1, env.workableDaysPassed.get(a.id) || 1);
     const loadB = statsB.hours / Math.max(1, env.workableDaysPassed.get(b.id) || 1);
     if (Math.abs(loadA - loadB) > 0.05) return loadA - loadB;
 
-    // 6. Total shift count
+    // 5. Total shift count
     let scoreA = statsA.total;
     let scoreB = statsB.total;
     if (prioritizeEitherForDay && shiftType === ShiftType.DAY) {
@@ -651,18 +672,9 @@ function pickWorkers(
     }
     if (scoreA !== scoreB) return scoreA - scoreB;
 
-    // 7. Block rotation: a fresh starter whose previous block was the OTHER
-    // shift type is due this one — whole blocks of days alternate with whole
-    // blocks of nights.
-    if (rules.blockMode) {
-        const rotA = prevBlockType.get(a.id) === shiftType ? 1 : 0;
-        const rotB = prevBlockType.get(b.id) === shiftType ? 1 : 0;
-        if (rotA !== rotB) return rotA - rotB;
-    }
-
-    // 8. Day/night mix balance (including carry-over from imported history):
+    // 6. Day/night mix balance (including carry-over from imported history):
     // for a day shift, prefer whoever has worked relatively more nights, and
-    // vice versa, so each person's day/night split stays even.
+    // vice versa, so each person's day/night split stays fair.
     const biasA = historyBias.get(a.id) || 0;
     const biasB = historyBias.get(b.id) || 0;
     const mixA = shiftType === ShiftType.DAY ? (statsA.day - statsA.night + biasA) : (statsA.night - statsA.day - biasA);
@@ -671,9 +683,14 @@ function pickWorkers(
 
     // True tie: keep shuffled order (= random tie-break, consistent comparator)
     return 0;
-  });
+  };
 
-  return candidates.slice(0, count).map(e => e.id);
+  primary.sort(compare);
+  lastResort.sort(compare);
+
+  // Rotation-compliant candidates always fill first; same-type restarts are
+  // only drawn on when the slot would otherwise stay empty.
+  return [...primary, ...lastResort].slice(0, count).map(e => e.id);
 }
 
 export const exportToCSV = (version: ScheduleVersion, employees: Employee[]) => {
