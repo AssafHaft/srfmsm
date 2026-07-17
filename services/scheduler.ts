@@ -251,14 +251,31 @@ export const generateSchedule = (
   // Premium (weekend) days: more desirable shifts that must be spread evenly
   const premiumDays = new Set(config.premiumDays ?? [5, 6]);
 
+  // Management-configurable work-pattern rules. Health/rest limits are HARD
+  // constraints (enforced in candidate filtering); block consistency shapes
+  // the soft preference order.
+  const rules: WorkPatternRules = {
+    maxConsecutive: Math.max(1, config.maxConsecutiveDays ?? 5),
+    minRest: Math.max(1, config.minRestDays ?? 1),
+    shiftCap: config.maxShiftsPerMonth || 0,
+    blockMode: config.blockScheduling ?? true,
+  };
+
   const workHistory = new Map<string, Set<string>>();
   const lastShiftType = new Map<string, ShiftType | null>();
   const consecutiveDays = new Map<string, number>();
-  const stats = new Map<string, { day: number, night: number, total: number, hours: number, premium: number }>();
+  const stats = new Map<string, EmpRunningStats>();
 
   // availability tracking for fair pacing
   const totalWorkableDaysInMonth = new Map<string, number>();
   const workableDaysPassed = new Map<string, number>();
+
+  // Shift type of each worker's most recent block (persists through rest days)
+  // — used to rotate people to the opposite type when they start a new block.
+  const prevBlockType = new Map<string, ShiftType | null>();
+  // Grid index of the last day each worker worked — used to enforce the
+  // minimum rest between blocks. Seeded far in the past.
+  const lastWorkedDayIndex = new Map<string, number>();
 
   // Carry-over day/night imbalance from imported history: someone who worked
   // mostly nights last month should lean toward days this month (clamped so
@@ -272,9 +289,20 @@ export const generateSchedule = (
     consecutiveDays.set(e.id, history ? (history.consecutiveDaysEnding[e.id] || 0) : 0);
     lastShiftType.set(e.id, null);
     workableDaysPassed.set(e.id, 0);
+    prevBlockType.set(e.id, null);
+    lastWorkedDayIndex.set(e.id, -999);
 
     const hist = history?.accumulatedStats[e.id];
     historyBias.set(e.id, hist ? Math.max(-2, Math.min(2, hist.day - hist.night)) : 0);
+
+    // Imported CSV history: a worker mid-streak at the boundary is treated as
+    // continuing (grid day 0 sees them as having worked "yesterday").
+    if (history && (history.consecutiveDaysEnding[e.id] || 0) > 0) {
+      const boundaryType = history.lastDayNightShiftIds.includes(e.id) ? ShiftType.NIGHT : ShiftType.DAY;
+      lastShiftType.set(e.id, boundaryType);
+      prevBlockType.set(e.id, boundaryType);
+      lastWorkedDayIndex.set(e.id, -1);
+    }
 
     // Pre-calculate total workable days for this employee in the target month
     let count = 0;
@@ -302,8 +330,10 @@ export const generateSchedule = (
                 if (todayWorkers.includes(e.id)) {
                     consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
                     workHistory.get(e.id)?.add(dateKey);
-                    if (entry.dayShift.includes(e.id)) lastShiftType.set(e.id, ShiftType.DAY);
-                    else lastShiftType.set(e.id, ShiftType.NIGHT);
+                    const t = entry.dayShift.includes(e.id) ? ShiftType.DAY : ShiftType.NIGHT;
+                    lastShiftType.set(e.id, t);
+                    prevBlockType.set(e.id, t);
+                    lastWorkedDayIndex.set(e.id, -i);
                 } else {
                     consecutiveDays.set(e.id, 0);
                     lastShiftType.set(e.id, null);
@@ -345,20 +375,11 @@ export const generateSchedule = (
       dayWorkers = manualEntry.dayShift;
       nightWorkers = manualEntry.nightShift;
     } else {
-      const forbiddenDayWorkers: string[] = [];
-      employees.forEach(e => {
-         const yesterdayDate = new Date(dayDate);
-         yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-         const yKey = formatDateKey(yesterdayDate);
-
-         if (lastShiftType.get(e.id) === ShiftType.NIGHT) {
-             if (workHistory.get(e.id)?.has(yKey)) {
-                 forbiddenDayWorkers.push(e.id);
-             } else if (dayIndex === 0 && history && history.lastDayNightShiftIds.includes(e.id)) {
-                 forbiddenDayWorkers.push(e.id);
-             }
-         }
-      });
+      const env: SelectionEnv = {
+        workableDaysPassed, totalWorkableDaysInMonth, workHistory, lastShiftType,
+        prevBlockType, consecutiveDays, lastWorkedDayIndex, stats, historyBias,
+        premiumDays, rules
+      };
 
       // Special Case: Total Req = 1 (Smart Single-Resource)
       // The solo worker covers the whole operational window; the Payroll
@@ -370,62 +391,23 @@ export const generateSchedule = (
 
       if (totalReq === 1) {
           const soloType = reqs.night === 1 ? ShiftType.NIGHT : ShiftType.DAY;
-          // A solo shift spans the whole window incl. morning hours, so
-          // workers coming off a night shift are excluded either way.
+          // wholeDay: a solo shift spans the full window incl. morning hours,
+          // so the no-day-after-night rest rule applies whatever its type.
           const picked = pickWorkers(
-            employees,
-            1,
-            dayDate,
-            workableDaysPassed,
-            totalWorkableDaysInMonth,
-            soloType,
-            workHistory,
-            lastShiftType,
-            consecutiveDays,
-            stats,
-            forbiddenDayWorkers,
+            employees, 1, dayDate, dayIndex, soloType, [],
             soloType === ShiftType.DAY && !!config.distributeDayShiftsToEither,
-            historyBias,
-            premiumDays
+            true, env
           );
           dayWorkers = soloType === ShiftType.DAY ? picked : [];
           nightWorkers = soloType === ShiftType.NIGHT ? picked : [];
       } else {
-          // Standard Split assignment
-          // Day Shift
           dayWorkers = pickWorkers(
-            employees,
-            reqs.day,
-            dayDate,
-            workableDaysPassed,
-            totalWorkableDaysInMonth,
-            ShiftType.DAY,
-            workHistory,
-            lastShiftType,
-            consecutiveDays,
-            stats,
-            forbiddenDayWorkers,
-            !!config.distributeDayShiftsToEither,
-            historyBias,
-            premiumDays
+            employees, reqs.day, dayDate, dayIndex, ShiftType.DAY, [],
+            !!config.distributeDayShiftsToEither, false, env
           );
-
-          // Night Shift
           nightWorkers = pickWorkers(
-            employees,
-            reqs.night,
-            dayDate,
-            workableDaysPassed,
-            totalWorkableDaysInMonth,
-            ShiftType.NIGHT,
-            workHistory,
-            lastShiftType,
-            consecutiveDays,
-            stats,
-            dayWorkers,
-            false,
-            historyBias,
-            premiumDays
+            employees, reqs.night, dayDate, dayIndex, ShiftType.NIGHT, dayWorkers,
+            false, false, env
           );
       }
     }
@@ -443,8 +425,10 @@ export const generateSchedule = (
       if (workedToday) {
         workHistory.get(e.id)?.add(dateKey);
         consecutiveDays.set(e.id, (consecutiveDays.get(e.id) || 0) + 1);
-        if (dayWorkers.includes(e.id)) lastShiftType.set(e.id, ShiftType.DAY);
-        else lastShiftType.set(e.id, ShiftType.NIGHT);
+        lastWorkedDayIndex.set(e.id, dayIndex);
+        const t = dayWorkers.includes(e.id) ? ShiftType.DAY : ShiftType.NIGHT;
+        lastShiftType.set(e.id, t);
+        prevBlockType.set(e.id, t);
 
         if (isTargetMonth) {
           const s = stats.get(e.id)!;
@@ -495,25 +479,62 @@ export const generateSchedule = (
   };
 };
 
-// Selection Logic
+// --- Selection Logic ---
+
+type EmpRunningStats = { day: number, night: number, total: number, hours: number, premium: number };
+
+interface WorkPatternRules {
+  maxConsecutive: number; // hard cap on consecutive work days
+  minRest: number;        // minimum full rest days between two work blocks
+  shiftCap: number;       // hard cap on shifts per person per month (0 = off)
+  blockMode: boolean;     // build & rotate continuous same-shift blocks
+}
+
+interface SelectionEnv {
+  workableDaysPassed: Map<string, number>;
+  totalWorkableDaysInMonth: Map<string, number>;
+  workHistory: Map<string, Set<string>>;
+  lastShiftType: Map<string, ShiftType | null>;
+  prevBlockType: Map<string, ShiftType | null>;
+  consecutiveDays: Map<string, number>;
+  lastWorkedDayIndex: Map<string, number>;
+  stats: Map<string, EmpRunningStats>;
+  historyBias: Map<string, number>;
+  premiumDays: Set<number>;
+  rules: WorkPatternRules;
+}
+
+// Priority order (hard constraints filter first, then soft ranking):
+//   HARD — health & limits, never traded away: availability, vacations,
+//     monthly shift cap, max consecutive days, no day shift after a night
+//     shift, minimum rest between blocks, and (in block mode) no shift-type
+//     change inside a block.
+//   SOFT — 1. personal target not yet met  2. continue an active block
+//     (predictable routine)  3. target pacing  4. premium-day rotation
+//     5. hours load vs own availability  6. total shifts  7. rotate fresh
+//     starters to the opposite type of their previous block  8. day/night
+//     mix  9. random among true ties.
 function pickWorkers(
   pool: Employee[],
   count: number,
   date: Date,
-  workableDaysPassed: Map<string, number>,
-  totalWorkableDaysInMonth: Map<string, number>,
+  dayIndex: number,
   shiftType: ShiftType,
-  workHistory: Map<string, Set<string>>,
-  lastShiftType: Map<string, ShiftType | null>,
-  consecutiveDays: Map<string, number>,
-  stats: Map<string, { day: number, night: number, total: number, hours: number, premium: number }>,
   excludeIds: string[],
-  prioritizeEitherForDay: boolean = false,
-  historyBias?: Map<string, number>,
-  premiumDays?: Set<number>
+  prioritizeEitherForDay: boolean,
+  wholeDay: boolean, // solo shift covering the entire operational window
+  env: SelectionEnv
 ): string[] {
   if (count <= 0) return [];
   const dateKey = formatDateKey(date);
+  const { rules, stats, prevBlockType, historyBias, premiumDays } = env;
+
+  const yesterday = new Date(date);
+  yesterday.setDate(date.getDate() - 1);
+  const yKey = formatDateKey(yesterday);
+
+  // Workers currently mid-block (worked yesterday, compatible shift type)
+  const continuing = new Set<string>();
 
   const candidates = pool.filter(e => {
     if (excludeIds.includes(e.id)) return false;
@@ -528,16 +549,25 @@ function pickWorkers(
     // Specific Unavailability (Vacations/Dates)
     if (e.availability.unavailableDates?.includes(dateKey)) return false;
 
-    // HARD CONSTRAINT: Max 5 consecutive
-    if ((consecutiveDays.get(e.id) || 0) >= 5) return false;
+    // HARD (health): max consecutive work days
+    if ((env.consecutiveDays.get(e.id) || 0) >= rules.maxConsecutive) return false;
 
-    // HARD CONSTRAINT: No Day after Night
-    if (shiftType === ShiftType.DAY) {
-        const yesterday = new Date(date);
-        yesterday.setDate(date.getDate() - 1);
-        const yKey = formatDateKey(yesterday);
-        const workedYesterday = workHistory.get(e.id)?.has(yKey);
-        if (workedYesterday && lastShiftType.get(e.id) === ShiftType.NIGHT) return false;
+    // HARD (limit): monthly shift cap
+    if (rules.shiftCap > 0 && (stats.get(e.id)?.total || 0) >= rules.shiftCap) return false;
+
+    const gap = dayIndex - (env.lastWorkedDayIndex.get(e.id) ?? -999);
+    const workedYesterday = gap === 1 || !!env.workHistory.get(e.id)?.has(yKey);
+    const last = env.lastShiftType.get(e.id);
+
+    if (workedYesterday) {
+      // HARD (health): never a day shift (or whole-day solo) right after a night shift
+      if (last === ShiftType.NIGHT && (shiftType === ShiftType.DAY || wholeDay)) return false;
+      // HARD (consistency): in block mode, no shift-type change inside a block
+      if (rules.blockMode && last !== null && last !== shiftType) return false;
+      continuing.add(e.id);
+    } else {
+      // HARD (health): finish the minimum rest before starting a new block
+      if (gap > 1 && gap - 1 < rules.minRest) return false;
     }
 
     return true;
@@ -564,10 +594,19 @@ function pickWorkers(
     const metTargetB = targetB > 0 && statsB.total >= targetB;
     if (metTargetA !== metTargetB) return metTargetA ? 1 : -1;
 
-    // 2. Prorated Pacing: Compare shifts worked to available shifts opportunity
+    // 2. Block continuation: keep an active block going rather than starting
+    // someone new — an uninterrupted same-shift run is the most predictable
+    // routine for the worker.
+    if (rules.blockMode) {
+        const contA = continuing.has(a.id) ? 0 : 1;
+        const contB = continuing.has(b.id) ? 0 : 1;
+        if (contA !== contB) return contA - contB;
+    }
+
+    // 3. Prorated Pacing: Compare shifts worked to available shifts opportunity
     const getPacingDiff = (empId: string, empTarget: number, currentTotal: number) => {
-        const totalWorkable = totalWorkableDaysInMonth.get(empId) || 0;
-        const passedWorkable = workableDaysPassed.get(empId) || 0;
+        const totalWorkable = env.totalWorkableDaysInMonth.get(empId) || 0;
+        const passedWorkable = env.workableDaysPassed.get(empId) || 0;
         if (empTarget <= 0 || totalWorkable === 0) return 0;
 
         // Key logic: Expected shifts are proportional to MY actual availability
@@ -589,21 +628,21 @@ function pickWorkers(
     const catB = getCategory(diffB, targetB > 0);
     if (catA !== catB) return catA - catB;
 
-    // 3. Premium (weekend) fairness: on a premium day, prefer whoever has
+    // 4. Premium (weekend) fairness: on a premium day, prefer whoever has
     // had fewer premium shifts. These better-paid slots are scarce, so their
     // rotation outranks hour pacing here — hours re-balance on regular days.
-    if (premiumDays?.has(date.getDay()) && statsA.premium !== statsB.premium) {
+    if (premiumDays.has(date.getDay()) && statsA.premium !== statsB.premium) {
         return statsA.premium - statsB.premium;
     }
 
-    // 4. Hours fairness: hours worked relative to each worker's own
+    // 5. Hours fairness: hours worked relative to each worker's own
     // availability so far. Shift counts alone hide the fact that solo days
     // are much longer than split days.
-    const loadA = statsA.hours / Math.max(1, workableDaysPassed.get(a.id) || 1);
-    const loadB = statsB.hours / Math.max(1, workableDaysPassed.get(b.id) || 1);
+    const loadA = statsA.hours / Math.max(1, env.workableDaysPassed.get(a.id) || 1);
+    const loadB = statsB.hours / Math.max(1, env.workableDaysPassed.get(b.id) || 1);
     if (Math.abs(loadA - loadB) > 0.05) return loadA - loadB;
 
-    // 5. Total shift count
+    // 6. Total shift count
     let scoreA = statsA.total;
     let scoreB = statsB.total;
     if (prioritizeEitherForDay && shiftType === ShiftType.DAY) {
@@ -612,11 +651,20 @@ function pickWorkers(
     }
     if (scoreA !== scoreB) return scoreA - scoreB;
 
-    // 6. Day/night mix balance (including carry-over from imported history):
+    // 7. Block rotation: a fresh starter whose previous block was the OTHER
+    // shift type is due this one — whole blocks of days alternate with whole
+    // blocks of nights.
+    if (rules.blockMode) {
+        const rotA = prevBlockType.get(a.id) === shiftType ? 1 : 0;
+        const rotB = prevBlockType.get(b.id) === shiftType ? 1 : 0;
+        if (rotA !== rotB) return rotA - rotB;
+    }
+
+    // 8. Day/night mix balance (including carry-over from imported history):
     // for a day shift, prefer whoever has worked relatively more nights, and
     // vice versa, so each person's day/night split stays even.
-    const biasA = historyBias?.get(a.id) || 0;
-    const biasB = historyBias?.get(b.id) || 0;
+    const biasA = historyBias.get(a.id) || 0;
+    const biasB = historyBias.get(b.id) || 0;
     const mixA = shiftType === ShiftType.DAY ? (statsA.day - statsA.night + biasA) : (statsA.night - statsA.day - biasA);
     const mixB = shiftType === ShiftType.DAY ? (statsB.day - statsB.night + biasB) : (statsB.night - statsB.day - biasB);
     if (mixA !== mixB) return mixA - mixB;
