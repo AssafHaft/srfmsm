@@ -6,7 +6,7 @@ import { Employee, ScheduleVersion, ShiftConfig, ShiftType } from '../../types';
 import { formatDayLabel, formatShortDate } from '../../lib/dates';
 import { downloadFile, scheduleToCSV, scheduleToExcelHtml, scheduleToText } from '../../lib/io';
 import { calculatePayroll } from '../../lib/payroll';
-import { Badge, Button, Card, Menu, MenuItem, Modal, Segmented, cx } from '../ui';
+import { Badge, Button, Card, Menu, MenuItem, Modal, Segmented, cx, isEmbedded } from '../ui';
 import { CalendarView } from './CalendarView';
 import { AssignDialog, SlotRef } from './AssignDialog';
 import { FairnessTable, PayrollTable } from './Tables';
@@ -42,8 +42,14 @@ export const VersionView: React.FC<{
   const gap = Math.round(fairness.maxShiftGap * 10) / 10;
   const monthShifts = version.schedule.filter(d => !d.isPadding).reduce((s, d) => s + d.dayShift.length + d.nightShift.length, 0);
 
-  const exportCsv = () => downloadFile(`schedule_${version.month + 1}_${version.year}.csv`, scheduleToCSV(version, people.nameOf), 'text/csv;charset=utf-8');
+  const embedded = isEmbedded();
+  const blocked = () => toast('Downloads are blocked inside this preview window. Exports work in the app itself.', 'error');
+  const exportCsv = () => {
+    if (embedded) return blocked();
+    downloadFile(`schedule_${version.month + 1}_${version.year}.csv`, scheduleToCSV(version, people.nameOf), 'text/csv;charset=utf-8');
+  };
   const exportExcel = () => {
+    if (embedded) return blocked();
     const pay = calculatePayroll(version.schedule, employees, insights.config).byWorker;
     const summary = Object.keys(stats).filter(id => stats[id].shifts > 0).map(id => ({
       name: people.nameOf(id), shifts: stats[id].shifts, day: stats[id].day, night: stats[id].night,
@@ -85,7 +91,7 @@ export const VersionView: React.FC<{
                 <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint="Summary included" onClick={() => { exportExcel(); close(); }}>Excel</MenuItem>
                 <MenuItem icon={<Download className="w-4 h-4" />} hint="Can be imported back next month" onClick={() => { exportCsv(); close(); }}>CSV</MenuItem>
                 <MenuItem icon={<ClipboardCopy className="w-4 h-4" />} hint="Day-by-day text for WhatsApp" onClick={() => { copyText(); close(); }}>Copy as text</MenuItem>
-                <MenuItem icon={<Printer className="w-4 h-4" />} hint="Or save as PDF" onClick={() => { close(); setView('calendar'); setTimeout(() => window.print(), 100); }}>Print</MenuItem>
+                {!embedded && <MenuItem icon={<Printer className="w-4 h-4" />} hint="Or save as PDF" onClick={() => { close(); setView('calendar'); setTimeout(() => window.print(), 100); }}>Print</MenuItem>}
               </>}
             </Menu>
           </div>

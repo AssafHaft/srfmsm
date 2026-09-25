@@ -4,7 +4,7 @@ import { Employee, ScheduleVersion, ShiftConfig, ShiftType } from '../../types';
 import { assignmentHints, Issue } from '../../lib/validate';
 import { formatDayLabel } from '../../lib/dates';
 import { WorkerStats } from '../../lib/stats';
-import { Badge, Button, ColorDot, Modal, cx } from '../ui';
+import { Badge, Button, ColorDot, Modal, cx, useConfirm } from '../ui';
 import type { People } from './derived';
 
 export interface SlotRef {
@@ -36,6 +36,7 @@ export const AssignDialog: React.FC<{
 }> = ({ slot, version, employees, config, people, stats, onAssign, onRemove, onTogglePin, onClose }) => {
   const day = version.schedule.find(d => d.date === slot.date);
   const isDay = slot.shift === ShiftType.DAY;
+  const confirm = useConfirm();
 
   const candidates = useMemo<Candidate[]>(() => {
     if (!day) return [];
@@ -69,10 +70,11 @@ export const AssignDialog: React.FC<{
 
   if (!day) return null;
 
-  const pick = (c: Candidate) => {
+  const pick = async (c: Candidate) => {
     if (c.errors > 0) {
       const msg = c.hints.filter(h => h.severity === 'error').map(h => `• ${h.message}`).join('\n');
-      if (!window.confirm(`This breaks a rule for ${c.e.name}:\n${msg}\n\nAssign anyway?`)) return;
+      const ok = await confirm({ title: `This breaks a rule for ${c.e.name}`, message: `${msg}\n\nAssign anyway?`, confirmLabel: 'Assign anyway', danger: true });
+      if (!ok) return;
     }
     onAssign(c.e.id);
   };

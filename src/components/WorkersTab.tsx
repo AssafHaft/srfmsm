@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { CalendarRange, Edit2, Plane, Plus, Trash2, UserCheck, UserX, Users } from 'lucide-react';
 import { Employee, WorkerPreference } from '../types';
-import { Badge, Button, Card, CardHeader, ColorDot, FieldLabel, IconButton, Modal, NumberField, Segmented, Toggle, cx, inputClass } from './ui';
+import { Badge, Button, Card, CardHeader, ColorDot, FieldLabel, IconButton, Modal, NumberField, Segmented, Toggle, cx, inputClass, useConfirm } from './ui';
 import { WORKER_PALETTE, suggestWorkerColor } from '../lib/config';
 import { addDays, dateRange, formatDateKey, formatShortDate, WEEKDAYS_SHORT } from '../lib/dates';
 import { newId } from '../lib/generate';
@@ -194,6 +194,7 @@ export const WorkersTab: React.FC<{
   setEmployees: (fn: (p: Employee[]) => Employee[]) => void;
 }> = ({ employees, setEmployees }) => {
   const [editing, setEditing] = useState<{ emp: Employee; isNew: boolean } | null>(null);
+  const confirm = useConfirm();
   const today = formatDateKey(new Date());
 
   const startAdd = () => setEditing({
@@ -209,9 +210,14 @@ export const WorkersTab: React.FC<{
     setEditing(null);
   };
 
-  const remove = (e: Employee) => {
-    if (!window.confirm(`Delete ${e.name}?\n\nTip: to leave someone out for a while, mark them inactive instead.`)) return;
-    setEmployees(p => p.filter(x => x.id !== e.id));
+  const remove = async (e: Employee) => {
+    const ok = await confirm({
+      title: `Delete ${e.name}?`,
+      message: 'Past schedules keep showing their name. To leave someone out for a while, mark them inactive instead.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (ok) setEmployees(p => p.filter(x => x.id !== e.id));
   };
 
   const activeCount = useMemo(() => employees.filter(e => e.active !== false).length, [employees]);

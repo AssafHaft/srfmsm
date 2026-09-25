@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Check, CheckCircle2, Edit2, Layers, Trash2 } from 'lucide-react';
 import { Employee, ScheduleVersion, ShiftConfig } from '../../types';
-import { Card, IconButton, cx, inputClass } from '../ui';
+import { Card, IconButton, cx, inputClass, useConfirm } from '../ui';
 import { versionInsights } from './derived';
 
 export const qualityLine = (v: ScheduleVersion, employees: Employee[], config: ShiftConfig) => {
@@ -27,6 +27,7 @@ export const VersionList: React.FC<{
   onDelete: (id: string) => void;
 }> = ({ versions, currentId, employees, config, onSelect, onFinal, onRename, onDelete }) => {
   const [renaming, setRenaming] = useState<string | null>(null);
+  const confirm = useConfirm();
   const [draft, setDraft] = useState('');
   const quality = useMemo(() => new Map(versions.map(v => [v.id, qualityLine(v, employees, config)])), [versions, employees, config]);
 
@@ -56,7 +57,7 @@ export const VersionList: React.FC<{
                 <div className="flex shrink-0">
                   <IconButton label={v.final ? 'Unmark final' : 'Mark as final'} onClick={() => onFinal(v.id)} className={v.final ? 'text-emerald-600' : ''}><CheckCircle2 className="w-4 h-4" /></IconButton>
                   <IconButton label="Rename" onClick={() => { setDraft(v.name); setRenaming(v.id); }}><Edit2 className="w-3.5 h-3.5" /></IconButton>
-                  <IconButton label="Delete version" onClick={() => { if (window.confirm(`Delete "${v.name}"?`)) onDelete(v.id); }} className="hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></IconButton>
+                  <IconButton label="Delete version" onClick={async () => { if (await confirm({ title: `Delete "${v.name}"?`, message: v.final ? 'This is the final version of the month.' : undefined, confirmLabel: 'Delete', danger: true })) onDelete(v.id); }} className="hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></IconButton>
                 </div>
               </div>
               <div className="mt-1.5 flex flex-wrap gap-1">

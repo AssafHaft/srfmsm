@@ -3,7 +3,7 @@ import { CalendarDays, Download, HardDrive, Settings, Upload, Users, Waves } fro
 import { useAppState, Tab } from './state/useAppState';
 import { buildBackup, downloadFile, parseBackup } from './lib/io';
 import { formatDateKey } from './lib/dates';
-import { Menu, MenuItem, Toasts, cx, useToasts } from './components/ui';
+import { ConfirmProvider, Menu, MenuItem, Toasts, cx, isEmbedded, useConfirm, useToasts } from './components/ui';
 import { ScheduleTab } from './components/schedule/ScheduleTab';
 import { WorkersTab } from './components/WorkersTab';
 import { RulesTab } from './components/RulesTab';
@@ -14,12 +14,23 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'rules', label: 'Rules', icon: <Settings className="w-4 h-4" /> },
 ];
 
-const App: React.FC = () => {
+const App: React.FC = () => (
+  <ConfirmProvider>
+    <Shell />
+  </ConfirmProvider>
+);
+
+const Shell: React.FC = () => {
   const app = useAppState();
   const toasts = useToasts();
+  const confirm = useConfirm();
   const restoreRef = useRef<HTMLInputElement>(null);
 
   const backup = () => {
+    if (isEmbedded()) {
+      toasts.push('Downloads are blocked inside this preview window. Backups work in the app itself.', 'error');
+      return;
+    }
     downloadFile(
       `shiftmaster_backup_${formatDateKey(new Date())}.json`,
       buildBackup({
@@ -38,7 +49,13 @@ const App: React.FC = () => {
     try {
       const data = parseBackup(await file.text());
       const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'an unknown date';
-      if (!window.confirm(`Restore the backup from ${when}?\n\nThis replaces all current workers, rules and schedules.`)) return;
+      const ok = await confirm({
+        title: 'Restore this backup?',
+        message: `Backup from ${when}: ${data.employees.length} workers, ${data.versions.length} schedule versions.\n\nThis replaces all current workers, rules and schedules in this browser.`,
+        confirmLabel: 'Restore',
+        danger: true,
+      });
+      if (!ok) return;
       app.setEmployees(data.employees);
       app.setConfig(data.config);
       app.setVersions(data.versions);

@@ -1,5 +1,5 @@
 // Small shared UI building blocks.
-import React, { useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(' ');
@@ -249,3 +249,41 @@ export const FieldLabel: React.FC<{ children: React.ReactNode; hint?: React.Reac
     {hint && <span className="block text-xs text-slate-500 font-normal">{hint}</span>}
   </label>
 );
+
+// In-app confirmation dialog (browser confirm() is blocked in some embeds)
+interface ConfirmOptions {
+  title: string;
+  message?: React.ReactNode;
+  confirmLabel?: string;
+  danger?: boolean;
+}
+
+const ConfirmContext = createContext<(o: ConfirmOptions) => Promise<boolean>>(async () => false);
+
+export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [pending, setPending] = useState<(ConfirmOptions & { resolve: (v: boolean) => void }) | null>(null);
+  const confirm = useCallback((o: ConfirmOptions) => new Promise<boolean>(resolve => setPending({ ...o, resolve })), []);
+  const finish = (v: boolean) => { pending?.resolve(v); setPending(null); };
+  return (
+    <ConfirmContext.Provider value={confirm}>
+      {children}
+      {pending && (
+        <Modal open onClose={() => finish(false)} title={pending.title}
+          footer={<>
+            <Button variant="ghost" onClick={() => finish(false)}>Cancel</Button>
+            <Button variant={pending.danger ? 'danger' : 'primary'} onClick={() => finish(true)}>{pending.confirmLabel || 'OK'}</Button>
+          </>}>
+          {pending.message && <div className="text-sm text-slate-700 whitespace-pre-line">{pending.message}</div>}
+        </Modal>
+      )}
+    </ConfirmContext.Provider>
+  );
+};
+
+export const useConfirm = () => useContext(ConfirmContext);
+
+// True when the app runs inside another page's frame (e.g. a preview),
+// where downloads and printing are usually blocked.
+export const isEmbedded = (): boolean => {
+  try { return window.self !== window.top; } catch { return true; }
+};
