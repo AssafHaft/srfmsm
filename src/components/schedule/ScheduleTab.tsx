@@ -11,11 +11,13 @@ import { PlanPanel } from './PlanPanel';
 import { VersionList } from './VersionList';
 import { VersionView } from './VersionView';
 import { ContextEditor } from './ContextEditor';
+import { useI18n } from '../../i18n';
 
 export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?: 'ok' | 'error') => void }> = ({ app, toast }) => {
   const { employees, config, ui, continuity, currentVersion, monthVersions, versions } = app;
   const { year, month } = ui;
   const [generating, setGenerating] = useState(false);
+  const { t } = useI18n();
   const [editingContext, setEditingContext] = useState(false);
 
   const active = useMemo(() => employees.filter(e => e.active !== false), [employees]);
@@ -41,7 +43,7 @@ export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?:
         app.addVersion(v);
       } catch (err) {
         console.error(err);
-        toast('Something went wrong while generating. Please try again.', 'error');
+        toast(t('plan.genFailed'), 'error');
       } finally {
         setGenerating(false);
       }
@@ -51,12 +53,12 @@ export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?:
   const importCsv = async (file: File) => {
     try {
       const res = parseScheduleCSV(await file.text(), employees);
-      if (res.days === 0) throw new Error('No dated rows found.');
-      app.setMonthSetup(s => ({ ...s, continuity: 'custom', custom: res.entries, customLabel: `From ${file.name}`, released: undefined }));
-      const note = res.unmatched.length ? `\nNames not matched to a worker: ${res.unmatched.join(', ')}` : '';
-      toast(`Imported ${res.days} days (${formatShortDate(res.first!)} – ${formatShortDate(res.last!)}).${note}`, res.unmatched.length ? 'error' : 'ok');
+      if (res.days === 0) throw new Error(t('csv.noDates'));
+      app.setMonthSetup(s => ({ ...s, continuity: 'custom', custom: res.entries, customLabel: t('cont.fromFile', { file: file.name }), released: undefined }));
+      const note = res.unmatched.length ? `\n${t('csv.unmatched', { names: res.unmatched.join(', ') })}` : '';
+      toast(t('csv.imported', { count: res.days, range: `${formatShortDate(res.first!)} – ${formatShortDate(res.last!)}` }) + note, res.unmatched.length ? 'error' : 'ok');
     } catch (err) {
-      toast(`Could not read that CSV: ${(err as Error).message}`, 'error');
+      toast(t('csv.failed', { error: (err as Error).message }), 'error');
     }
   };
 
@@ -117,8 +119,8 @@ export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?:
         ) : (
           <Card className="p-10 text-center">
             <CalendarDays className="w-12 h-12 text-blue-200 mx-auto mb-3" />
-            <h3 className="font-semibold text-slate-900">No schedule for {monthLabel(year, month)} yet</h3>
-            <p className="text-sm text-slate-500 mt-1">Check the start of the month and priorities, then press <b>Generate schedule</b>.</p>
+            <h3 className="font-semibold text-slate-900">{t('plan.noSchedule', { month: monthLabel(year, month) })}</h3>
+            <p className="text-sm text-slate-500 mt-1">{t('plan.noScheduleHint')}</p>
           </Card>
         )}
       </div>
@@ -131,9 +133,9 @@ export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?:
           initial={contextInitial}
           onClose={() => setEditingContext(false)}
           onSave={entries => {
-            app.setMonthSetup(s => ({ ...s, continuity: 'custom', custom: entries, customLabel: 'Entered manually', released: undefined }));
+            app.setMonthSetup(s => ({ ...s, continuity: 'custom', custom: entries, customLabel: t('cont.manual'), released: undefined }));
             setEditingContext(false);
-            toast('Start of month saved. It will be used when you generate.');
+            toast(t('ctx.saved'));
           }}
         />
       )}

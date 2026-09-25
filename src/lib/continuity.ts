@@ -6,6 +6,7 @@ import { DayAssignmentMap, Employee, MonthSetup, ScheduleVersion, ShiftConfig, W
 import { formatShortDate, gridKeys, monthLabel, shiftMonth } from './dates';
 import { computeStats } from './stats';
 import type { CarryOver } from './engine/model';
+import { translate as tr } from '../i18n';
 
 export interface Continuity {
   source: 'version' | 'custom' | 'none';
@@ -17,7 +18,7 @@ export interface Continuity {
   carry?: Record<string, CarryOver>;
 }
 
-export const NO_CONTINUITY: Continuity = { source: 'none', label: 'Start fresh', history: {}, carried: {} };
+export const NO_CONTINUITY: Continuity = { source: 'none', label: '', history: {}, carried: {} };
 
 // Versions of the month before (year, month): final first, then newest.
 export function previousMonthVersions(versions: ScheduleVersion[], year: number, month: number): ScheduleVersion[] {
@@ -57,7 +58,7 @@ export function resolveContinuity(
     if (Object.keys(entries).length === 0) return NO_CONTINUITY;
     const { history, carried } = splitContext(entries, year, month);
     (setup?.released || []).forEach(d => { delete carried[d]; });
-    return { source: 'custom', label: setup?.customLabel || 'Entered manually', history, carried };
+    return { source: 'custom', label: setup?.customLabel || tr('cont.manual'), history, carried };
   }
 
   const prev = previousMonthVersions(versions, year, month)[0];
@@ -70,7 +71,7 @@ export function resolveContinuity(
   });
   const { history, carried } = splitContext(entries, year, month);
   (setup?.released || []).forEach(d => { delete carried[d]; });
-  const name = `${monthLabel(prev.year, prev.month)} · ${prev.name.split('·').pop()?.trim() || 'schedule'}${prev.final ? ' (final)' : ''}`;
+  const name = `${monthLabel(prev.year, prev.month)} · ${prev.name.split('·').pop()?.trim() || 'v1'}${prev.final ? ` (${tr('cont.final')})` : ''}`;
   const carry = config ? carryFromVersion(prev, employees, config) : undefined;
   return { source: 'version', label: name, versionId: prev.id, history, carried, carry };
 }
@@ -101,8 +102,7 @@ export function carryFromVersion(prev: ScheduleVersion, employees: Employee[], c
 
 export function describeCarried(c: Continuity): string {
   const dates = Object.keys(c.carried).sort();
-  if (dates.length === 0) return 'No overlapping days';
-  return dates.length === 1
-    ? `${formatShortDate(dates[0])} kept as-is`
-    : `${formatShortDate(dates[0])} – ${formatShortDate(dates[dates.length - 1])} kept as-is`;
+  if (dates.length === 0) return tr('cont.noOverlap');
+  const range = dates.length === 1 ? formatShortDate(dates[0]) : `${formatShortDate(dates[0])} – ${formatShortDate(dates[dates.length - 1])}`;
+  return tr('cont.keptAsIs', { range });
 }

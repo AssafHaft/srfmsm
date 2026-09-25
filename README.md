@@ -55,6 +55,27 @@ from this app, type in how last month ended, or start fresh.
 - Export to Excel (with a summary) or CSV, copy as text for WhatsApp, or print / save as PDF.
 - Special days (holidays, events, closures) can change staffing and hours for a date.
 
+## Language
+
+The header has a language button (עברית / English). Hebrew switches the whole app,
+including rule messages and exports, to right-to-left. The choice is remembered per
+device; the first visit follows the browser's language.
+
+## Where data is stored
+
+Everything is saved in the browser of the device you use (and survives reloads).
+Other devices and browsers do not see it unless you use one of these:
+
+- **GitHub sync** (drive icon → GitHub sync settings): saves all data as one JSON file
+  in a GitHub repository and loads it on your other devices. Use a **private**
+  repository (for example `shiftmaster-data`): this app's own repository is public.
+  Create a fine-grained personal access token with access to that repository only and
+  the permission *Contents: Read and write*, and paste it in the settings on each
+  device (the token stays in that browser only). The drive icon shows a dot when there
+  are unsaved changes; the app offers to load newer data saved from another device and
+  warns before overwriting someone else's newer save.
+- **Backup file**: download a JSON backup and restore it elsewhere.
+
 ## Development
 
 Requires Node.js 20+.
@@ -71,7 +92,8 @@ Code layout:
 - `src/lib/engine/` — scheduling engine (`model.ts` problem setup, `targets.ts` fair shares,
   `solver.ts` construction + local search)
 - `src/lib/` — validation, stats, payroll, month continuity, import/export, storage
-- `src/components/` — UI (Schedule, Workers, Rules)
+- `src/components/` — UI (Schedule, Workers, Rules, GitHub sync dialog)
+- `src/i18n/` — English and Hebrew strings
 - `tests/` — Vitest suites
 
 Saved data from earlier versions of the app (browser storage and JSON backups) loads

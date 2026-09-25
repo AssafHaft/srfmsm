@@ -6,6 +6,7 @@ import { Continuity, describeCarried } from '../../lib/continuity';
 import type { CapacityCheck } from '../../lib/engine';
 import { Button, Card, Menu, MenuItem, cx } from '../ui';
 import { PrioritiesEditor } from '../PrioritiesEditor';
+import { useI18n } from '../../i18n';
 
 export const PlanPanel: React.FC<{
   year: number;
@@ -28,34 +29,37 @@ export const PlanPanel: React.FC<{
 }> = props => {
   const { year, month, goToMonth, continuity, kept, capacity, generating } = props;
   const [showPriorities, setShowPriorities] = useState(false);
+  const { t } = useI18n();
   const fileRef = useRef<HTMLInputElement>(null);
   const prev = shiftMonth(year, month, -1);
   const next = shiftMonth(year, month, 1);
   const short = capacity.capacity < capacity.slots;
 
   const sourceText = continuity.source === 'version'
-    ? `Continues from ${continuity.label}`
+    ? t('plan.continuesFrom', { label: continuity.label })
     : continuity.source === 'custom'
       ? continuity.label
-      : props.continuityMode === 'none' ? 'Starts fresh' : 'Starts fresh (no schedule for last month)';
+      : props.continuityMode === 'none' ? t('plan.fresh') : t('plan.freshNoPrev');
 
   return (
     <Card className="p-4 print:hidden">
       <div className="flex items-center justify-between gap-2">
-        <button type="button" aria-label="Previous month" onClick={() => goToMonth(prev.year, prev.month)} className="rounded-lg p-2 hover:bg-slate-100 text-slate-600"><ChevronLeft className="w-5 h-5" /></button>
+        <button type="button" aria-label={t('plan.prevMonth')} onClick={() => goToMonth(prev.year, prev.month)} className="rounded-lg p-2 hover:bg-slate-100 text-slate-600"><ChevronLeft className="w-5 h-5 rtl:rotate-180" /></button>
         <div className="text-center">
           <div className="text-lg font-semibold text-slate-900">{monthLabel(year, month)}</div>
-          <div className="text-xs text-slate-500">{capacity.slots} shifts to fill · {props.activeWorkers} active workers</div>
+          <div className="text-xs text-slate-500">{t('plan.summary', { slots: capacity.slots, workers: props.activeWorkers })}</div>
         </div>
-        <button type="button" aria-label="Next month" onClick={() => goToMonth(next.year, next.month)} className="rounded-lg p-2 hover:bg-slate-100 text-slate-600"><ChevronRight className="w-5 h-5" /></button>
+        <button type="button" aria-label={t('plan.nextMonth')} onClick={() => goToMonth(next.year, next.month)} className="rounded-lg p-2 hover:bg-slate-100 text-slate-600"><ChevronRight className="w-5 h-5 rtl:rotate-180" /></button>
       </div>
 
       {capacity.shortDays.length > 0 && (
         <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>
-            Not enough people available on {capacity.shortDays.slice(0, 3).map(d => `${formatShortDate(d.date)} (${d.available} of ${d.needed})`).join(', ')}
-            {capacity.shortDays.length > 3 && ` and ${capacity.shortDays.length - 3} more day${capacity.shortDays.length > 4 ? 's' : ''}`}. Those slots will stay unfilled unless time off or staffing changes.
+            {t('plan.shortDays', {
+              days: capacity.shortDays.slice(0, 3).map(d => t('plan.shortDay', { date: formatShortDate(d.date), available: d.available, needed: d.needed })).join(', ')
+                + (capacity.shortDays.length > 3 ? t('plan.andMore', { count: capacity.shortDays.length - 3 }) : ''),
+            })}
           </span>
         </div>
       )}
@@ -63,50 +67,50 @@ export const PlanPanel: React.FC<{
       {short && (
         <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
           <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>Your team can legally cover about <b>{capacity.capacity}</b> of <b>{capacity.slots}</b> shifts (limits, time off, rest rules). Expect around {capacity.slots - capacity.capacity} unfilled slots.</span>
+          <span>{t('plan.capacity', { capacity: capacity.capacity, slots: capacity.slots, missing: capacity.slots - capacity.capacity })}</span>
         </div>
       )}
 
       <div className="mt-4">
         <div className="flex items-center justify-between gap-2 mb-1.5">
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start of month</span>
-          <Menu button={toggle => <Button size="sm" variant="ghost" onClick={toggle} aria-label="Change start of month">Change <ChevronDown className="w-3.5 h-3.5" /></Button>}>
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t('plan.start')}</span>
+          <Menu button={toggle => <Button size="sm" variant="ghost" onClick={toggle} aria-label={t('plan.changeStart')}>{t('plan.change')} <ChevronDown className="w-3.5 h-3.5" /></Button>}>
             {close => <>
-              <MenuItem icon={<RotateCcw className="w-4 h-4" />} hint={props.hasPreviousVersion ? 'Use last month\'s final (or latest) schedule' : 'No schedule for last month yet'}
-                onClick={() => { props.setContinuityMode('auto'); close(); }}>Continue from last month</MenuItem>
-              <MenuItem icon={<FileUp className="w-4 h-4" />} hint="A CSV exported from this app" onClick={() => { fileRef.current?.click(); close(); }}>Import CSV…</MenuItem>
-              <MenuItem icon={<SquarePen className="w-4 h-4" />} hint="Type in how last month ended" onClick={() => { props.onEditContext(); close(); }}>Enter / edit manually…</MenuItem>
-              <MenuItem icon={<Sparkles className="w-4 h-4" />} hint="Ignore last month" onClick={() => { props.setContinuityMode('none'); close(); }}>Start fresh</MenuItem>
+              <MenuItem icon={<RotateCcw className="w-4 h-4" />} hint={props.hasPreviousVersion ? t('plan.autoHint') : t('plan.autoNone')}
+                onClick={() => { props.setContinuityMode('auto'); close(); }}>{t('plan.auto')}</MenuItem>
+              <MenuItem icon={<FileUp className="w-4 h-4" />} hint={t('plan.csvHint')} onClick={() => { fileRef.current?.click(); close(); }}>{t('plan.csv')}</MenuItem>
+              <MenuItem icon={<SquarePen className="w-4 h-4" />} hint={t('plan.manualHint')} onClick={() => { props.onEditContext(); close(); }}>{t('plan.manual')}</MenuItem>
+              <MenuItem icon={<Sparkles className="w-4 h-4" />} hint={t('plan.freshHint')} onClick={() => { props.setContinuityMode('none'); close(); }}>{t('plan.freshItem')}</MenuItem>
             </>}
           </Menu>
         </div>
         <div className="rounded-lg border border-slate-200 p-2.5 text-sm">
           <div className="flex items-start gap-1.5 text-slate-800"><History className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" /><span className="min-w-0 break-words">{sourceText}</span></div>
-          {continuity.source !== 'none' && <div className="text-xs text-slate-500 mt-0.5 ml-5">{describeCarried(continuity)}</div>}
+          {continuity.source !== 'none' && <div className="text-xs text-slate-500 mt-0.5 ms-5">{describeCarried(continuity)}</div>}
         </div>
         <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) props.onImportCsv(f); }} />
       </div>
 
       {(kept.locked > 0 || kept.pinned > 0) && (
         <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-blue-800 bg-blue-50 border border-blue-100 rounded-lg p-2.5">
-          <span className="font-medium">Kept when regenerating:</span>
-          {kept.locked > 0 && <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> {kept.locked} locked day{kept.locked > 1 ? 's' : ''}</span>}
-          {kept.pinned > 0 && <span className="flex items-center gap-1"><Pin className="w-3 h-3" /> {kept.pinned} pinned shift{kept.pinned > 1 ? 's' : ''}</span>}
+          <span className="font-medium">{t('plan.kept')}</span>
+          {kept.locked > 0 && <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> {t('plan.lockedDays', { count: kept.locked })}</span>}
+          {kept.pinned > 0 && <span className="flex items-center gap-1"><Pin className="w-3 h-3" /> {t('plan.pinnedShifts', { count: kept.pinned })}</span>}
         </div>
       )}
 
       <div className="mt-4">
         <button type="button" onClick={() => setShowPriorities(v => !v)} className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800">
-          <span className="flex items-center gap-1.5"><SlidersHorizontal className="w-3.5 h-3.5" /> Priorities</span>
+          <span className="flex items-center gap-1.5"><SlidersHorizontal className="w-3.5 h-3.5" /> {t('p.title')}</span>
           <ChevronDown className={cx('w-4 h-4 transition', showPriorities && 'rotate-180')} />
         </button>
         {showPriorities && <div className="mt-2"><PrioritiesEditor compact config={props.config} onChange={props.setConfig} /></div>}
       </div>
 
       <Button variant="primary" className="w-full mt-4 py-2.5" disabled={generating || props.activeWorkers === 0} onClick={props.onGenerate}>
-        {generating ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating…</> : <><Sparkles className="w-4 h-4" /> {props.hasVersion ? 'Generate new version' : 'Generate schedule'}</>}
+        {generating ? <><Loader2 className="w-4 h-4 animate-spin" /> {t('plan.generating')}</> : <><Sparkles className="w-4 h-4" /> {props.hasVersion ? t('plan.generateNew') : t('plan.generate')}</>}
       </Button>
-      {props.activeWorkers === 0 && <p className="text-xs text-red-600 mt-2 text-center">Add at least one active worker first.</p>}
+      {props.activeWorkers === 0 && <p className="text-xs text-red-600 mt-2 text-center">{t('plan.noWorkers')}</p>}
     </Card>
   );
 };

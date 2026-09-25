@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { Employee, ScheduleVersion, ShiftConfig } from '../../types';
 import { validateSchedule, ValidationResult } from '../../lib/validate';
 import { computeStats, fairnessSummary, FairnessSummary, WorkerStats } from '../../lib/stats';
+import { translate, useI18n } from '../../i18n';
 
 // Rules a version is judged by: the weekly rules it was generated with, plus
 // the current special days (closures/holidays are facts about dates).
@@ -21,7 +22,7 @@ export const makePeople = (employees: Employee[], version?: ScheduleVersion | nu
   const byId = new Map(employees.map(e => [e.id, e]));
   return {
     byId,
-    nameOf: id => byId.get(id)?.name || version?.people?.[id]?.name || 'Removed worker',
+    nameOf: id => byId.get(id)?.name || version?.people?.[id]?.name || translate('v.removedWorker'),
     colorOf: id => byId.get(id)?.color || version?.people?.[id]?.color || '#e5e7eb',
   };
 };
@@ -49,8 +50,11 @@ export function versionInsights(version: ScheduleVersion, employees: Employee[],
   return { config, validation, stats, fairness, ruleIssues };
 }
 
-export const useVersionInsights = (version: ScheduleVersion | null, employees: Employee[], current: ShiftConfig) =>
-  useMemo(() => (version ? versionInsights(version, employees, current) : null), [version, employees, current]);
+export const useVersionInsights = (version: ScheduleVersion | null, employees: Employee[], current: ShiftConfig) => {
+  const { lang } = useI18n(); // rule messages are in the UI language
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => (version ? versionInsights(version, employees, current) : null), [version, employees, current, lang]);
+};
 
 // Have the weekly rules changed since this version was generated?
 export const rulesChangedSince = (version: ScheduleVersion, current: ShiftConfig): boolean => {

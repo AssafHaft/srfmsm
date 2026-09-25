@@ -6,6 +6,7 @@ import { runEngine } from './engine';
 import type { Continuity } from './continuity';
 import { legacyStats } from './stats';
 import { addDays, gridKeys, monthLabel } from './dates';
+import { translate as tr } from '../i18n';
 
 export interface GenerateOptions {
   employees: Employee[];
@@ -105,11 +106,10 @@ export function generateVersion(opts: GenerateOptions): ScheduleVersion {
   const people: Record<string, { name: string; color: string }> = {};
   employees.forEach(e => { people[e.id] = { name: e.name, color: e.color }; });
 
-  const short = new Date(year, month, 1).toLocaleString('en-US', { month: 'short' });
   return {
     id: newId(),
     timestamp: Date.now(),
-    name: `Schedule ${short} ${year} · v${opts.variation}`,
+    name: tr('versionName', { month: monthLabel(year, month, 'short'), n: opts.variation }),
     month,
     year,
     configSnapshot: JSON.parse(JSON.stringify(config)),

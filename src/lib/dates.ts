@@ -1,7 +1,20 @@
 // Date helpers. All schedule dates are local-calendar YYYY-MM-DD keys.
+// Display helpers follow the current UI language.
+import { getLang, localeFor } from '../i18n';
 
-export const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-export const WEEKDAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const SHORT = {
+  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+  he: ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'],
+};
+const LONG = {
+  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+  he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'],
+};
+
+export const weekdayShort = (i: number): string => SHORT[getLang()][i];
+export const weekdayLong = (i: number): string => LONG[getLang()][i];
+export const weekdaysShort = (): string[] => SHORT[getLang()];
+export const weekdaysLong = (): string[] => LONG[getLang()];
 
 export const formatDateKey = (date: Date): string => {
   const y = date.getFullYear();
@@ -44,7 +57,7 @@ export const shiftMonth = (year: number, month: number, delta: number): { year: 
 };
 
 export const monthLabel = (year: number, month: number, style: 'long' | 'short' = 'long'): string =>
-  new Date(year, month, 1).toLocaleString('en-US', { month: style, year: 'numeric' });
+  new Date(year, month, 1).toLocaleString(localeFor(), { month: style, year: 'numeric' });
 
 // Full-week grid: the Sunday on/before the 1st through the Saturday on/after
 // the last day of the month.
@@ -67,7 +80,14 @@ export const isInMonth = (key: string, year: number, month: number): boolean =>
   key.startsWith(monthKey(year, month) + '-');
 
 export const formatShortDate = (key: string): string =>
-  parseDateKey(key).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  parseDateKey(key).toLocaleDateString(localeFor(), { month: 'short', day: 'numeric' });
 
 export const formatDayLabel = (key: string): string =>
-  parseDateKey(key).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  getLang() === 'he'
+    ? `יום ${LONG.he[parseDateKey(key).getDay()]}, ${formatShortDate(key)}`
+    : parseDateKey(key).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+export const formatDateTime = (ts: number, withYear = false): string =>
+  new Date(ts).toLocaleString(getLang() === 'he' ? 'he-IL' : 'en-GB', {
+    day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}), hour: '2-digit', minute: '2-digit',
+  });

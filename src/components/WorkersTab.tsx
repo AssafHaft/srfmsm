@@ -3,16 +3,19 @@ import { CalendarRange, Edit2, Plane, Plus, Trash2, UserCheck, UserX, Users } fr
 import { Employee, WorkerPreference } from '../types';
 import { Badge, Button, Card, CardHeader, ColorDot, FieldLabel, IconButton, Modal, NumberField, Segmented, Toggle, cx, inputClass, useConfirm } from './ui';
 import { WORKER_PALETTE, suggestWorkerColor } from '../lib/config';
-import { addDays, dateRange, formatDateKey, formatShortDate, WEEKDAYS_SHORT } from '../lib/dates';
+import { addDays, dateRange, formatDateKey, formatShortDate, weekdayShort, weekdaysShort } from '../lib/dates';
 import { newId } from '../lib/generate';
+import { MessageKey, useI18n } from '../i18n';
 
-export const PREFERENCE_OPTIONS: { value: WorkerPreference; label: string; hint: string }[] = [
-  { value: WorkerPreference.DAY_ONLY, label: 'Day only', hint: 'Never scheduled on night shifts' },
-  { value: WorkerPreference.PREFERS_DAY, label: 'Prefers day', hint: 'Mostly day shifts, nights when needed' },
-  { value: WorkerPreference.EITHER, label: 'Either', hint: 'Balanced mix of day and night shifts' },
-  { value: WorkerPreference.PREFERS_NIGHT, label: 'Prefers night', hint: 'Mostly night shifts, days when needed' },
-  { value: WorkerPreference.NIGHT_ONLY, label: 'Night only', hint: 'Never scheduled on day shifts' },
+export const PREFERENCE_OPTIONS: { value: WorkerPreference; label: MessageKey; hint: MessageKey }[] = [
+  { value: WorkerPreference.DAY_ONLY, label: 'pref.dayOnly', hint: 'pref.dayOnlyHint' },
+  { value: WorkerPreference.PREFERS_DAY, label: 'pref.prefersDay', hint: 'pref.prefersDayHint' },
+  { value: WorkerPreference.EITHER, label: 'pref.either', hint: 'pref.eitherHint' },
+  { value: WorkerPreference.PREFERS_NIGHT, label: 'pref.prefersNight', hint: 'pref.prefersNightHint' },
+  { value: WorkerPreference.NIGHT_ONLY, label: 'pref.nightOnly', hint: 'pref.nightOnlyHint' },
 ];
+
+export const preferenceLabel = (p: WorkerPreference): MessageKey => PREFERENCE_OPTIONS.find(o => o.value === p)?.label ?? 'pref.either';
 
 export const preferenceTone = (p: WorkerPreference) =>
   p === WorkerPreference.DAY_ONLY || p === WorkerPreference.PREFERS_DAY ? 'amber'
@@ -43,6 +46,7 @@ const WorkerEditor: React.FC<{
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [offKind, setOffKind] = useState<'off' | 'prefer'>('off');
+  const { t } = useI18n();
   const a = draft.availability;
   const set = (patch: Partial<Employee>) => setDraft(d => ({ ...d, ...patch }));
   const setAvail = (patch: Partial<Employee['availability']>) => setDraft(d => ({ ...d, availability: { ...d.availability, ...patch } }));
@@ -81,68 +85,69 @@ const WorkerEditor: React.FC<{
   };
 
   const canSave = draft.name.trim().length > 0;
-  const prefHint = PREFERENCE_OPTIONS.find(o => o.value === draft.preference)?.hint;
+  const prefHintKey = PREFERENCE_OPTIONS.find(o => o.value === draft.preference)?.hint;
+  const prefHint = prefHintKey ? t(prefHintKey) : undefined;
 
   return (
     <Modal
       open
       wide
       onClose={onClose}
-      title={isNew ? 'Add worker' : `Edit ${initial.name}`}
+      title={isNew ? t('w.addTitle') : t('w.editTitle', { name: initial.name })}
       footer={<>
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" disabled={!canSave} onClick={() => onSave({ ...draft, name: draft.name.trim() })}>{isNew ? 'Add worker' : 'Save'}</Button>
+        <Button variant="ghost" onClick={onClose}>{t('ui.cancel')}</Button>
+        <Button variant="primary" disabled={!canSave} onClick={() => onSave({ ...draft, name: draft.name.trim() })}>{isNew ? t('w.add') : t('ui.save')}</Button>
       </>}
     >
       <div className="grid grid-cols-1 gap-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <FieldLabel htmlFor="w-name">Name</FieldLabel>
+            <FieldLabel htmlFor="w-name">{t('w.name')}</FieldLabel>
             <input id="w-name" dir="auto" autoFocus value={draft.name} onChange={e => set({ name: e.target.value })} className={cx(inputClass, 'w-full')} />
           </div>
           <div>
-            <FieldLabel>Color</FieldLabel>
+            <FieldLabel>{t('w.color')}</FieldLabel>
             <div className="flex items-center gap-2 flex-wrap">
               {WORKER_PALETTE.map(c => (
-                <button key={c} type="button" aria-label={`Color ${c}`} onClick={() => set({ color: c })}
+                <button key={c} type="button" aria-label={t('w.colorOption', { c })} onClick={() => set({ color: c })}
                   className={cx('w-6 h-6 rounded-full border-2', draft.color === c ? 'border-blue-600 scale-110' : 'border-transparent')} style={{ backgroundColor: c }} />
               ))}
-              <input type="color" aria-label="Custom color" value={draft.color} onChange={e => set({ color: e.target.value })} className="w-8 h-8 p-0.5 border rounded bg-white cursor-pointer" />
+              <input type="color" aria-label={t('w.customColor')} value={draft.color} onChange={e => set({ color: e.target.value })} className="w-8 h-8 p-0.5 border rounded bg-white cursor-pointer" />
             </div>
           </div>
         </div>
 
         <div>
-          <FieldLabel hint={prefHint}>Shift preference</FieldLabel>
-          <Segmented size="sm" ariaLabel="Shift preference" value={draft.preference} onChange={v => set({ preference: v })}
-            options={PREFERENCE_OPTIONS.map(o => ({ value: o.value, label: o.label, title: o.hint }))} />
+          <FieldLabel hint={prefHint}>{t('w.preference')}</FieldLabel>
+          <Segmented size="sm" ariaLabel={t('w.preference')} value={draft.preference} onChange={v => set({ preference: v })}
+            options={PREFERENCE_OPTIONS.map(o => ({ value: o.value, label: t(o.label), title: t(o.hint) }))} />
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div>
-            <FieldLabel hint="They get up to this many; also the target when there's enough work">Max shifts / month</FieldLabel>
-            <NumberField allowEmpty min={1} max={31} value={draft.targetShifts} placeholder="No limit" onChange={v => set({ targetShifts: v ? Math.round(v) : undefined })} className="w-full" ariaLabel="Max shifts per month" />
+            <FieldLabel hint={t('w.maxHint')}>{t('w.max')}</FieldLabel>
+            <NumberField allowEmpty min={1} max={31} value={draft.targetShifts} placeholder={t('ui.noLimit')} onChange={v => set({ targetShifts: v ? Math.round(v) : undefined })} className="w-full" ariaLabel={t('w.max')} />
           </div>
           <div>
-            <FieldLabel hint="Used for the payroll estimate">Hourly rate (₪)</FieldLabel>
-            <NumberField allowEmpty min={0} step={0.5} value={draft.hourlyRate} placeholder="e.g. 75" onChange={v => set({ hourlyRate: v || undefined })} className="w-full" ariaLabel="Hourly rate" />
+            <FieldLabel hint={t('w.rateHint')}>{t('w.rate')}</FieldLabel>
+            <NumberField allowEmpty min={0} step={0.5} value={draft.hourlyRate} placeholder={t('w.rateExample')} onChange={v => set({ hourlyRate: v || undefined })} className="w-full" ariaLabel={t('w.rate')} />
           </div>
           <div>
-            <FieldLabel hint="Inactive workers are left out of new schedules">Active</FieldLabel>
+            <FieldLabel hint={t('w.activeHint')}>{t('w.active')}</FieldLabel>
             <div className="flex items-center gap-2 h-9">
-              <Toggle checked={draft.active !== false} onChange={v => set({ active: v })} label="Active" />
-              <span className="text-sm text-slate-600">{draft.active !== false ? 'Included' : 'Left out'}</span>
+              <Toggle checked={draft.active !== false} onChange={v => set({ active: v })} label={t('w.active')} />
+              <span className="text-sm text-slate-600">{draft.active !== false ? t('w.included') : t('w.leftOut')}</span>
             </div>
           </div>
         </div>
 
         <div>
-          <FieldLabel hint="Tap a day to cycle: available → prefers off → can't work">Weekly availability</FieldLabel>
+          <FieldLabel hint={t('w.weeklyHint')}>{t('w.weekly')}</FieldLabel>
           <div className="flex gap-1.5 flex-wrap">
-            {WEEKDAYS_SHORT.map((d, i) => {
+            {weekdaysShort().map((d, i) => {
               const s = dayState(i);
               return (
-                <button key={d} type="button" onClick={() => cycleDay(i)} aria-label={`${d}: ${s}`}
+                <button key={i} type="button" onClick={() => cycleDay(i)} aria-label={`${d}: ${t(s === 'available' ? 'w.available' : s === 'prefer' ? 'w.prefersOff' : 'w.cantWork')}`}
                   className={cx('w-14 py-1.5 rounded-lg text-sm border font-medium transition',
                     s === 'available' && 'bg-white text-slate-700 border-slate-300',
                     s === 'prefer' && 'bg-amber-50 text-amber-800 border-amber-300',
@@ -153,35 +158,35 @@ const WorkerEditor: React.FC<{
             })}
           </div>
           <div className="flex gap-3 mt-2 text-xs text-slate-500">
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-white border border-slate-300" /> Available</span>
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-100 border border-amber-300" /> Prefers off (avoided when possible)</span>
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-red-100 border border-red-300" /> Can't work</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-white border border-slate-300" /> {t('w.available')}</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-100 border border-amber-300" /> {t('w.prefersOffLegend')}</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-red-100 border border-red-300" /> {t('w.cantWork')}</span>
           </div>
         </div>
 
         <div>
-          <FieldLabel hint="Vacations, exams, one-off requests. Leave 'to' empty for a single day.">Time off</FieldLabel>
+          <FieldLabel hint={t('w.timeOffHint')}>{t('w.timeOff')}</FieldLabel>
           <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-            <label className="text-xs text-slate-600">From<input type="date" value={from} onChange={e => setFrom(e.target.value)} className={cx(inputClass, 'block mt-0.5')} /></label>
-            <label className="text-xs text-slate-600">To<input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} className={cx(inputClass, 'block mt-0.5')} /></label>
-            <Segmented size="sm" value={offKind} onChange={setOffKind} ariaLabel="Type of time off"
-              options={[{ value: 'off', label: "Can't work" }, { value: 'prefer', label: 'Prefers off' }]} />
-            <Button size="sm" variant="primary" disabled={!from} onClick={addTimeOff}><Plus className="w-3.5 h-3.5" /> Add</Button>
+            <label className="text-xs text-slate-600">{t('ui.from')}<input type="date" value={from} onChange={e => setFrom(e.target.value)} className={cx(inputClass, 'block mt-0.5')} /></label>
+            <label className="text-xs text-slate-600">{t('ui.to')}<input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} className={cx(inputClass, 'block mt-0.5')} /></label>
+            <Segmented size="sm" value={offKind} onChange={setOffKind} ariaLabel={t('w.timeOffType')}
+              options={[{ value: 'off', label: t('w.cantWork') }, { value: 'prefer', label: t('w.prefersOff') }]} />
+            <Button size="sm" variant="primary" disabled={!from} onClick={addTimeOff}><Plus className="w-3.5 h-3.5" /> {t('ui.add')}</Button>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {toRanges(a.unavailableDates).map(r => (
               <span key={'o' + r[0]} className="inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-xs">
                 <Plane className="w-3 h-3" /> {rangeLabel(r)}
-                <button type="button" aria-label="Remove" onClick={() => removeRange('off', r)} className="ml-0.5 hover:text-red-900">×</button>
+                <button type="button" aria-label={t('ui.remove')} onClick={() => removeRange('off', r)} className="ms-0.5 hover:text-red-900">×</button>
               </span>
             ))}
             {toRanges(a.preferOffDates || []).map(r => (
               <span key={'p' + r[0]} className="inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 text-xs">
-                <CalendarRange className="w-3 h-3" /> {rangeLabel(r)} (prefers off)
-                <button type="button" aria-label="Remove" onClick={() => removeRange('prefer', r)} className="ml-0.5 hover:text-amber-900">×</button>
+                <CalendarRange className="w-3 h-3" /> {rangeLabel(r)} ({t('w.prefersOffLower')})
+                <button type="button" aria-label={t('ui.remove')} onClick={() => removeRange('prefer', r)} className="ms-0.5 hover:text-amber-900">×</button>
               </span>
             ))}
-            {a.unavailableDates.length + (a.preferOffDates?.length || 0) === 0 && <span className="text-xs text-slate-400">No time off added</span>}
+            {a.unavailableDates.length + (a.preferOffDates?.length || 0) === 0 && <span className="text-xs text-slate-400">{t('w.noTimeOff')}</span>}
           </div>
         </div>
       </div>
@@ -195,6 +200,7 @@ export const WorkersTab: React.FC<{
 }> = ({ employees, setEmployees }) => {
   const [editing, setEditing] = useState<{ emp: Employee; isNew: boolean } | null>(null);
   const confirm = useConfirm();
+  const { t } = useI18n();
   const today = formatDateKey(new Date());
 
   const startAdd = () => setEditing({
@@ -212,9 +218,9 @@ export const WorkersTab: React.FC<{
 
   const remove = async (e: Employee) => {
     const ok = await confirm({
-      title: `Delete ${e.name}?`,
-      message: 'Past schedules keep showing their name. To leave someone out for a while, mark them inactive instead.',
-      confirmLabel: 'Delete',
+      title: t('w.deleteTitle', { name: e.name }),
+      message: t('w.deleteMsg'),
+      confirmLabel: t('ui.delete'),
       danger: true,
     });
     if (ok) setEmployees(p => p.filter(x => x.id !== e.id));
@@ -226,12 +232,12 @@ export const WorkersTab: React.FC<{
     <Card>
       <CardHeader
         icon={<Users className="w-5 h-5 text-blue-600" />}
-        title="Workers"
-        subtitle={`${activeCount} active${employees.length > activeCount ? `, ${employees.length - activeCount} inactive` : ''}`}
-        actions={<Button variant="primary" onClick={startAdd}><Plus className="w-4 h-4" /> Add worker</Button>}
+        title={t('tab.workers')}
+        subtitle={employees.length > activeCount ? t('w.countWithInactive', { active: activeCount, inactive: employees.length - activeCount }) : t('w.count', { active: activeCount })}
+        actions={<Button variant="primary" onClick={startAdd}><Plus className="w-4 h-4" /> {t('w.add')}</Button>}
       />
       <div className="px-4 pb-4 grid gap-3 lg:grid-cols-2">
-        {employees.length === 0 && <p className="text-sm text-slate-500 py-6 text-center lg:col-span-2">No workers yet. Add your team to start scheduling.</p>}
+        {employees.length === 0 && <p className="text-sm text-slate-500 py-6 text-center lg:col-span-2">{t('w.empty')}</p>}
         {employees.map(e => {
           const upcomingOff = toRanges(e.availability.unavailableDates.filter(d => d >= today));
           const upcomingPrefer = (e.availability.preferOffDates || []).filter(d => d >= today).length;
@@ -242,25 +248,25 @@ export const WorkersTab: React.FC<{
                 <div className="flex items-center gap-2 flex-wrap">
                   <ColorDot color={e.color} />
                   <span dir="auto" className="font-medium text-slate-900">{e.name}</span>
-                  <Badge tone={preferenceTone(e.preference)}>{PREFERENCE_OPTIONS.find(o => o.value === e.preference)?.label}</Badge>
-                  {e.targetShifts ? <Badge tone="green">Max {e.targetShifts}/mo</Badge> : null}
-                  {inactive && <Badge>Inactive</Badge>}
+                  <Badge tone={preferenceTone(e.preference)}>{t(preferenceLabel(e.preference))}</Badge>
+                  {e.targetShifts ? <Badge tone="green">{t('w.maxBadge', { n: e.targetShifts })}</Badge> : null}
+                  {inactive && <Badge>{t('w.inactive')}</Badge>}
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
-                  {e.hourlyRate ? <span>₪{e.hourlyRate}/h</span> : null}
-                  {e.availability.daysOff.length > 0 && <span className="text-red-600">Never {e.availability.daysOff.map(d => WEEKDAYS_SHORT[d]).join(', ')}</span>}
-                  {(e.availability.preferOffDays?.length || 0) > 0 && <span className="text-amber-700">Prefers off {e.availability.preferOffDays!.map(d => WEEKDAYS_SHORT[d]).join(', ')}</span>}
+                  {e.hourlyRate ? <span>{t('w.perHour', { rate: e.hourlyRate })}</span> : null}
+                  {e.availability.daysOff.length > 0 && <span className="text-red-600">{t('w.never', { days: e.availability.daysOff.map(weekdayShort).join(', ') })}</span>}
+                  {(e.availability.preferOffDays?.length || 0) > 0 && <span className="text-amber-700">{t('w.prefersOffDays', { days: e.availability.preferOffDays!.map(weekdayShort).join(', ') })}</span>}
                   {upcomingOff.slice(0, 2).map(r => <span key={r[0]} className="text-blue-700 flex items-center gap-1"><Plane className="w-3 h-3" />{rangeLabel(r)}</span>)}
-                  {upcomingOff.length > 2 && <span className="text-blue-700">+{upcomingOff.length - 2} more</span>}
-                  {upcomingPrefer > 0 && <span className="text-amber-700">{upcomingPrefer} prefers-off date{upcomingPrefer > 1 ? 's' : ''}</span>}
+                  {upcomingOff.length > 2 && <span className="text-blue-700">{t('w.more', { n: upcomingOff.length - 2 })}</span>}
+                  {upcomingPrefer > 0 && <span className="text-amber-700">{t('w.preferDates', { count: upcomingPrefer })}</span>}
                 </div>
               </div>
               <div className="flex shrink-0">
-                <IconButton label={inactive ? 'Mark active' : 'Mark inactive'} onClick={() => setEmployees(p => p.map(x => (x.id === e.id ? { ...x, active: inactive } : x)))}>
+                <IconButton label={inactive ? t('w.markActive') : t('w.markInactive')} onClick={() => setEmployees(p => p.map(x => (x.id === e.id ? { ...x, active: inactive } : x)))}>
                   {inactive ? <UserCheck className="w-4 h-4" /> : <UserX className="w-4 h-4" />}
                 </IconButton>
-                <IconButton label="Edit" onClick={() => setEditing({ emp: e, isNew: false })}><Edit2 className="w-4 h-4" /></IconButton>
-                <IconButton label="Delete" onClick={() => remove(e)} className="hover:text-red-600"><Trash2 className="w-4 h-4" /></IconButton>
+                <IconButton label={t('ui.edit')} onClick={() => setEditing({ emp: e, isNew: false })}><Edit2 className="w-4 h-4" /></IconButton>
+                <IconButton label={t('ui.delete')} onClick={() => remove(e)} className="hover:text-red-600"><Trash2 className="w-4 h-4" /></IconButton>
               </div>
             </div>
           );

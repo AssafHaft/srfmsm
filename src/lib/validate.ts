@@ -4,6 +4,7 @@
 import { DailySchedule, DayAssignmentMap, Employee, ShiftConfig, ShiftType, WorkerPreference } from '../types';
 import { addDays } from './dates';
 import { availabilityOn, dayPlan, shiftCap, workRules } from './config';
+import { translate as tr } from '../i18n';
 
 export type IssueKind =
   | 'empty'
@@ -61,28 +62,28 @@ export function validateSchedule(
     const sev: Severity = day.isPadding ? 'warning' : 'error';
     if (plan.solo) {
       if (d + n < 1) {
-        issues.push({ date: day.date, shift: plan.req.night === 1 ? ShiftType.NIGHT : ShiftType.DAY, kind: 'empty', severity: sev, message: 'No one scheduled (solo day)' });
+        issues.push({ date: day.date, shift: plan.req.night === 1 ? ShiftType.NIGHT : ShiftType.DAY, kind: 'empty', severity: sev, message: tr('v.soloEmpty') });
         if (!day.isPadding) emptySlots++;
       }
     } else {
       const md = plan.req.day - d;
       const mn = plan.req.night - n;
       if (md > 0) {
-        issues.push({ date: day.date, shift: ShiftType.DAY, kind: 'empty', severity: sev, message: `${md} day slot${md > 1 ? 's' : ''} unfilled` });
+        issues.push({ date: day.date, shift: ShiftType.DAY, kind: 'empty', severity: sev, message: tr('v.daySlots', { count: md }) });
         if (!day.isPadding) emptySlots += md;
       }
       if (mn > 0) {
-        issues.push({ date: day.date, shift: ShiftType.NIGHT, kind: 'empty', severity: sev, message: `${mn} night slot${mn > 1 ? 's' : ''} unfilled` });
+        issues.push({ date: day.date, shift: ShiftType.NIGHT, kind: 'empty', severity: sev, message: tr('v.nightSlots', { count: mn }) });
         if (!day.isPadding) emptySlots += mn;
       }
     }
     if (plan.closed && d + n > 0) {
-      issues.push({ date: day.date, kind: 'closedDay', severity: 'warning', message: `Marked closed${plan.label ? ` (${plan.label})` : ''}, but people are scheduled` });
+      issues.push({ date: day.date, kind: 'closedDay', severity: 'warning', message: tr('v.closedDay', { label: plan.label ? ` (${plan.label})` : '' }) });
     }
     const seen = new Set<string>();
     [...day.dayShift, ...day.nightShift].forEach(id => {
       if (seen.has(id)) {
-        issues.push({ date: day.date, empId: id, kind: 'double', severity: 'error', message: 'Scheduled twice on the same day' });
+        issues.push({ date: day.date, empId: id, kind: 'double', severity: 'error', message: tr('v.double') });
       }
       seen.add(id);
     });
@@ -119,35 +120,33 @@ export function validateSchedule(
         issues.push({ date: day.date, empId: id, shift: k, kind, severity, message });
 
       const av = availabilityOn(e, day.date);
-      if (av === 0) push('unavailable', 'error', `${e.name} is unavailable (day off / vacation)`);
-      if (av === 2) push('prefersOff', 'info', `${e.name} prefers not to work this day`);
-      if (k === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) push('shiftType', 'error', `${e.name} works nights only`);
-      if (k === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) push('shiftType', 'error', `${e.name} works days only`);
-      if (k === ShiftType.DAY && e.preference === WorkerPreference.PREFERS_NIGHT) push('prefersType', 'info', `${e.name} prefers night shifts`);
-      if (k === ShiftType.NIGHT && e.preference === WorkerPreference.PREFERS_DAY) push('prefersType', 'info', `${e.name} prefers day shifts`);
-      if (e.active === false) push('inactive', 'info', `${e.name} is marked inactive`);
+      if (av === 0) push('unavailable', 'error', tr('v.unavailable', { name: e.name }));
+      if (av === 2) push('prefersOff', 'info', tr('v.prefersOff', { name: e.name }));
+      if (k === ShiftType.DAY && e.preference === WorkerPreference.NIGHT_ONLY) push('shiftType', 'error', tr('v.nightsOnly', { name: e.name }));
+      if (k === ShiftType.NIGHT && e.preference === WorkerPreference.DAY_ONLY) push('shiftType', 'error', tr('v.daysOnly', { name: e.name }));
+      if (k === ShiftType.DAY && e.preference === WorkerPreference.PREFERS_NIGHT) push('prefersType', 'info', tr('v.prefersNight', { name: e.name }));
+      if (k === ShiftType.NIGHT && e.preference === WorkerPreference.PREFERS_DAY) push('prefersType', 'info', tr('v.prefersDay', { name: e.name }));
+      if (e.active === false) push('inactive', 'info', tr('v.inactive', { name: e.name }));
 
       if (prev === ShiftType.NIGHT && (k === ShiftType.DAY || plan.solo)) {
-        push('dayAfterNight', 'error', plan.solo && k === ShiftType.NIGHT
-          ? 'Full-day shift right after a night shift'
-          : 'Day shift right after a night shift');
+        push('dayAfterNight', 'error', plan.solo && k === ShiftType.NIGHT ? tr('v.fullDayAfterNight') : tr('v.dayAfterNight'));
       } else if (rules.blockMode && prev && prev !== k) {
-        push('mixedRun', 'warning', 'Changes from day to night in the middle of a run');
+        push('mixedRun', 'warning', tr('v.mixedRun'));
       }
       if (prev) run++;
       else {
         const gap = g - lastWorkIdx - 1;
         if (lastWorkIdx > -Infinity && gap < rules.minRest) {
-          push('rest', 'error', `Only ${gap} day${gap === 1 ? '' : 's'} off before this shift (minimum ${rules.minRest})`);
+          push('rest', 'error', tr('v.rest', { count: gap, min: rules.minRest }));
         }
         run = 1;
       }
       if (run > rules.maxConsecutive) {
-        push('streak', 'error', `${run}${ordinal(run)} day in a row (maximum ${rules.maxConsecutive})`);
+        push('streak', 'error', tr('v.streak', { run, max: rules.maxConsecutive }));
       }
       if (!day.isPadding) {
         monthShifts++;
-        if (monthShifts === cap + 1) push('cap', 'error', `Over ${e.name}'s limit of ${cap} shifts this month`);
+        if (monthShifts === cap + 1) push('cap', 'error', tr('v.cap', { name: e.name, cap }));
       }
       lastWorkIdx = g;
       prev = k;
@@ -171,11 +170,6 @@ export function validateSchedule(
   return { issues, byDate, byCell, errors, warnings, emptySlots };
 }
 
-const ordinal = (n: number) => {
-  const s = ['th', 'st', 'nd', 'rd'];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
-};
 
 // Rule hints for putting `e` on `shift` on `date` (used by the assignment
 // picker before the change is made).

@@ -1,6 +1,7 @@
 // Small shared UI building blocks.
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(' ');
 
@@ -61,7 +62,7 @@ export const Toggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void
     onClick={() => onChange(!checked)}
     className={cx('relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400', checked ? 'bg-blue-600' : 'bg-slate-300')}
   >
-    <span className={cx('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform', checked ? 'translate-x-6' : 'translate-x-1')} />
+    <span className={cx('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform', checked ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-1 rtl:-translate-x-1')} />
   </button>
 );
 
@@ -161,6 +162,7 @@ export const ColorDot: React.FC<{ color?: string; className?: string }> = ({ col
 
 export const Modal: React.FC<{ open: boolean; onClose: () => void; title: React.ReactNode; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean }> = ({ open, onClose, title, children, footer, wide }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -174,7 +176,7 @@ export const Modal: React.FC<{ open: boolean; onClose: () => void; title: React.
       <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" className={cx('bg-white w-full rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh] focus:outline-none', wide ? 'sm:max-w-4xl' : 'sm:max-w-lg')}>
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <h3 className="font-semibold text-slate-900 min-w-0">{title}</h3>
-          <IconButton label="Close" onClick={onClose}><X className="w-5 h-5" /></IconButton>
+          <IconButton label={t('ui.close')} onClick={onClose}><X className="w-5 h-5" /></IconButton>
         </div>
         <div className="overflow-y-auto px-4 py-3 flex-1">{children}</div>
         {footer && <div className="border-t border-slate-200 px-4 py-3 flex justify-end gap-2 bg-slate-50 rounded-b-2xl">{footer}</div>}
@@ -199,7 +201,7 @@ export const Menu: React.FC<{ button: (open: () => void) => React.ReactNode; chi
     <div className="relative" ref={ref}>
       {button(() => setOpen(o => !o))}
       {open && (
-        <div className={cx('absolute z-40 mt-1 min-w-[220px] rounded-lg border border-slate-200 bg-white py-1 shadow-lg', align === 'right' ? 'right-0' : 'left-0')}>
+        <div className={cx('absolute z-40 mt-1 min-w-[220px] rounded-lg border border-slate-200 bg-white py-1 shadow-lg', align === 'right' ? 'end-0' : 'start-0')}>
           {children(() => setOpen(false))}
         </div>
       )}
@@ -208,7 +210,7 @@ export const Menu: React.FC<{ button: (open: () => void) => React.ReactNode; chi
 };
 
 export const MenuItem: React.FC<{ onClick: () => void; icon?: React.ReactNode; children: React.ReactNode; hint?: string; danger?: boolean }> = ({ onClick, icon, children, hint, danger }) => (
-  <button type="button" onClick={onClick} className={cx('w-full text-left px-3 py-2 text-sm flex items-start gap-2 hover:bg-slate-50', danger ? 'text-red-600' : 'text-slate-700')}>
+  <button type="button" onClick={onClick} className={cx('w-full text-start px-3 py-2 text-sm flex items-start gap-2 hover:bg-slate-50', danger ? 'text-red-600' : 'text-slate-700')}>
     {icon && <span className="mt-0.5 shrink-0">{icon}</span>}
     <span className="min-w-0">
       <span className="block">{children}</span>
@@ -220,16 +222,19 @@ export const MenuItem: React.FC<{ onClick: () => void; icon?: React.ReactNode; c
 // Toasts
 export interface ToastMsg { id: number; text: string; tone: 'ok' | 'error' }
 
-export const Toasts: React.FC<{ items: ToastMsg[]; onDismiss: (id: number) => void }> = ({ items, onDismiss }) => (
+export const Toasts: React.FC<{ items: ToastMsg[]; onDismiss: (id: number) => void }> = ({ items, onDismiss }) => {
+  const { t } = useI18n();
+  return (
   <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex flex-col gap-2 w-[min(92vw,420px)] print:hidden" aria-live="polite">
-    {items.map(t => (
-      <div key={t.id} className={cx('rounded-lg px-4 py-3 text-sm shadow-lg flex items-start justify-between gap-3', t.tone === 'ok' ? 'bg-slate-900 text-white' : 'bg-red-600 text-white')}>
-        <span className="whitespace-pre-line">{t.text}</span>
-        <button type="button" aria-label="Dismiss" onClick={() => onDismiss(t.id)} className="opacity-70 hover:opacity-100"><X className="w-4 h-4" /></button>
+    {items.map(m => (
+      <div key={m.id} className={cx('rounded-lg px-4 py-3 text-sm shadow-lg flex items-start justify-between gap-3', m.tone === 'ok' ? 'bg-slate-900 text-white' : 'bg-red-600 text-white')}>
+        <span className="whitespace-pre-line" dir="auto">{m.text}</span>
+        <button type="button" aria-label={t('ui.dismiss')} onClick={() => onDismiss(m.id)} className="opacity-70 hover:opacity-100"><X className="w-4 h-4" /></button>
       </div>
     ))}
   </div>
-);
+  );
+};
 
 export function useToasts() {
   const [items, setItems] = useState<ToastMsg[]>([]);
@@ -262,6 +267,7 @@ const ConfirmContext = createContext<(o: ConfirmOptions) => Promise<boolean>>(as
 
 export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [pending, setPending] = useState<(ConfirmOptions & { resolve: (v: boolean) => void }) | null>(null);
+  const { t } = useI18n();
   const confirm = useCallback((o: ConfirmOptions) => new Promise<boolean>(resolve => setPending({ ...o, resolve })), []);
   const finish = (v: boolean) => { pending?.resolve(v); setPending(null); };
   return (
@@ -270,8 +276,8 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
       {pending && (
         <Modal open onClose={() => finish(false)} title={pending.title}
           footer={<>
-            <Button variant="ghost" onClick={() => finish(false)}>Cancel</Button>
-            <Button variant={pending.danger ? 'danger' : 'primary'} onClick={() => finish(true)}>{pending.confirmLabel || 'OK'}</Button>
+            <Button variant="ghost" onClick={() => finish(false)}>{t('ui.cancel')}</Button>
+            <Button variant={pending.danger ? 'danger' : 'primary'} onClick={() => finish(true)}>{pending.confirmLabel || t('ui.ok')}</Button>
           </>}>
           {pending.message && <div className="text-sm text-slate-700 whitespace-pre-line">{pending.message}</div>}
         </Modal>

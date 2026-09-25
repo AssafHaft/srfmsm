@@ -3,6 +3,7 @@ import { Info, Moon, Sun } from 'lucide-react';
 import { DayAssignmentMap, Employee } from '../../types';
 import { addDays, formatDayLabel, gridKeys } from '../../lib/dates';
 import { Button, Modal, cx } from '../ui';
+import { useI18n } from '../../i18n';
 
 // Manual entry of how the previous month ended: the week before the grid
 // (history for rest/streak rules) and the first grid week (kept as-is).
@@ -14,6 +15,7 @@ export const ContextEditor: React.FC<{
   onSave: (entries: DayAssignmentMap) => void;
   onClose: () => void;
 }> = ({ year, month, employees, initial, onSave, onClose }) => {
+  const { t } = useI18n();
   const grid = gridKeys(year, month);
   const before = Array.from({ length: 7 }, (_, i) => addDays(grid[0], i - 7));
   const firstWeek = grid.slice(0, 7);
@@ -63,7 +65,7 @@ export const ContextEditor: React.FC<{
         {(['dayShift', 'nightShift'] as const).map(shift => (
           <div key={shift} className="flex items-start gap-2 mb-1">
             <span className={cx('w-12 shrink-0 flex items-center gap-1 text-[11px] font-semibold uppercase pt-1', shift === 'dayShift' ? 'text-amber-700' : 'text-indigo-700')}>
-              {shift === 'dayShift' ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}{shift === 'dayShift' ? 'Day' : 'Night'}
+              {shift === 'dayShift' ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}{shift === 'dayShift' ? t('s.day') : t('s.night')}
             </span>
             <div className="flex flex-wrap gap-1">
               {people.map(p => {
@@ -84,25 +86,25 @@ export const ContextEditor: React.FC<{
   };
 
   return (
-    <Modal open wide onClose={onClose} title="How did last month end?"
+    <Modal open wide onClose={onClose} title={t('ctx.title')}
       footer={<>
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" onClick={save}>Save</Button>
+        <Button variant="ghost" onClick={onClose}>{t('ui.cancel')}</Button>
+        <Button variant="primary" onClick={save}>{t('ui.save')}</Button>
       </>}>
       <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 flex gap-2">
         <Info className="w-4 h-4 shrink-0 mt-0.5" />
         <div>
-          <p><b>Before the calendar</b> (dashed): used only to respect rest, streak and no-day-after-night rules at the start of the month.</p>
-          <p className="mt-1"><b>First calendar week</b>: days you fill in are kept exactly as entered (e.g. what was already published). Days left empty are generated.</p>
+          <p><b>{t('ctx.before')}</b> {t('ctx.beforeHint')}</p>
+          <p className="mt-1"><b>{t('ctx.firstWeek')}</b>: {t('ctx.firstWeekHint')}</p>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="grid grid-cols-1 gap-2 content-start">
-          <h4 className="text-xs font-semibold uppercase text-slate-500 text-center">Before the calendar</h4>
+          <h4 className="text-xs font-semibold uppercase text-slate-500 text-center">{t('ctx.before')}</h4>
           {before.map(d => row(d, false))}
         </div>
         <div className="grid grid-cols-1 gap-2 content-start">
-          <h4 className="text-xs font-semibold uppercase text-blue-700 text-center">First calendar week (kept)</h4>
+          <h4 className="text-xs font-semibold uppercase text-blue-700 text-center">{t('ctx.firstWeekKept')}</h4>
           {firstWeek.map(d => row(d, true))}
         </div>
       </div>

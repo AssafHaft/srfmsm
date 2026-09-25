@@ -3,7 +3,7 @@ import {
   AlertTriangle, CalendarDays, CheckCircle2, ClipboardCopy, Download, FileSpreadsheet, LayoutGrid, List, Printer, Scale, Star, Wallet
 } from 'lucide-react';
 import { Employee, ScheduleVersion, ShiftConfig, ShiftType } from '../../types';
-import { formatDayLabel, formatShortDate } from '../../lib/dates';
+import { formatDateTime, formatDayLabel, formatShortDate } from '../../lib/dates';
 import { downloadFile, scheduleToCSV, scheduleToExcelHtml, scheduleToText } from '../../lib/io';
 import { calculatePayroll } from '../../lib/payroll';
 import { Badge, Button, Card, Menu, MenuItem, Modal, Segmented, cx, isEmbedded } from '../ui';
@@ -12,6 +12,7 @@ import { AssignDialog, SlotRef } from './AssignDialog';
 import { FairnessTable, PayrollTable } from './Tables';
 import { makePeople, rulesChangedSince, useVersionInsights } from './derived';
 import { applySpecialDays, SpecialDayForm } from '../RulesTab';
+import { useI18n } from '../../i18n';
 
 type View = 'calendar' | 'fairness' | 'payroll';
 
@@ -30,11 +31,12 @@ export const VersionView: React.FC<{
   toast: (text: string, tone?: 'ok' | 'error') => void;
 }> = ({ version, employees, config, setConfig, calendarMode, setCalendarMode, onAssign, onRemove, onTogglePin, onToggleLock, onFinal, toast }) => {
   const [view, setView] = useState<View>('calendar');
+  const { t } = useI18n();
   const [slot, setSlot] = useState<SlotRef | null>(null);
   const [dayEdit, setDayEdit] = useState<string | null>(null);
   const [showIssues, setShowIssues] = useState(false);
   const insights = useVersionInsights(version, employees, config)!;
-  const people = useMemo(() => makePeople(employees, version), [employees, version]);
+  const people = useMemo(() => makePeople(employees, version), [employees, version, t]);
   const changed = rulesChangedSince(version, config);
 
   const { validation, stats, fairness, ruleIssues } = insights;
@@ -43,7 +45,7 @@ export const VersionView: React.FC<{
   const monthShifts = version.schedule.filter(d => !d.isPadding).reduce((s, d) => s + d.dayShift.length + d.nightShift.length, 0);
 
   const embedded = isEmbedded();
-  const blocked = () => toast('Downloads are blocked inside this preview window. Exports work in the app itself.', 'error');
+  const blocked = () => toast(t('preview.noExports'), 'error');
   const exportCsv = () => {
     if (embedded) return blocked();
     downloadFile(`schedule_${version.month + 1}_${version.year}.csv`, scheduleToCSV(version, people.nameOf), 'text/csv;charset=utf-8');
@@ -60,9 +62,9 @@ export const VersionView: React.FC<{
   const copyText = async () => {
     try {
       await navigator.clipboard.writeText(scheduleToText(version, people.nameOf));
-      toast('Schedule copied — paste it into WhatsApp or an email.');
+      toast(t('v.copied'));
     } catch {
-      toast('Copying is blocked in this browser.', 'error');
+      toast(t('v.copyBlocked'), 'error');
     }
   };
 
@@ -75,23 +77,23 @@ export const VersionView: React.FC<{
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2 flex-wrap">
               <span dir="auto">{version.name}</span>
-              {version.final && <Badge tone="green"><CheckCircle2 className="w-3 h-3" /> Final</Badge>}
+              {version.final && <Badge tone="green"><CheckCircle2 className="w-3 h-3" /> {t('vl.final')}</Badge>}
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Generated {new Date(version.timestamp).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              {version.continuityLabel && <> · continues from {version.continuityLabel}</>}
+              {t('v.generated', { when: formatDateTime(version.timestamp, true) })}
+              {version.continuityLabel && <> · {t('v.continuesFrom', { label: version.continuityLabel })}</>}
             </p>
           </div>
           <div className="flex gap-2 print:hidden">
             <Button variant={version.final ? 'secondary' : 'primary'} size="sm" onClick={onFinal}>
-              <CheckCircle2 className="w-4 h-4" /> {version.final ? 'Unmark final' : 'Mark as final'}
+              <CheckCircle2 className="w-4 h-4" /> {version.final ? t('vl.unmarkFinal') : t('vl.markFinal')}
             </Button>
-            <Menu button={toggle => <Button size="sm" onClick={toggle}><Download className="w-4 h-4" /> Export</Button>}>
+            <Menu button={toggle => <Button size="sm" onClick={toggle}><Download className="w-4 h-4" /> {t('v.export')}</Button>}>
               {close => <>
-                <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint="Summary included" onClick={() => { exportExcel(); close(); }}>Excel</MenuItem>
-                <MenuItem icon={<Download className="w-4 h-4" />} hint="Can be imported back next month" onClick={() => { exportCsv(); close(); }}>CSV</MenuItem>
-                <MenuItem icon={<ClipboardCopy className="w-4 h-4" />} hint="Day-by-day text for WhatsApp" onClick={() => { copyText(); close(); }}>Copy as text</MenuItem>
-                {!embedded && <MenuItem icon={<Printer className="w-4 h-4" />} hint="Or save as PDF" onClick={() => { close(); setView('calendar'); setTimeout(() => window.print(), 100); }}>Print</MenuItem>}
+                <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint={t('v.excelHint')} onClick={() => { exportExcel(); close(); }}>Excel</MenuItem>
+                <MenuItem icon={<Download className="w-4 h-4" />} hint={t('v.csvHint')} onClick={() => { exportCsv(); close(); }}>CSV</MenuItem>
+                <MenuItem icon={<ClipboardCopy className="w-4 h-4" />} hint={t('v.textHint')} onClick={() => { copyText(); close(); }}>{t('v.text')}</MenuItem>
+                {!embedded && <MenuItem icon={<Printer className="w-4 h-4" />} hint={t('v.printHint')} onClick={() => { close(); setView('calendar'); setTimeout(() => window.print(), 100); }}>{t('v.print')}</MenuItem>}
               </>}
             </Menu>
           </div>
@@ -100,28 +102,28 @@ export const VersionView: React.FC<{
         <div className="mt-3 flex flex-wrap gap-2 print:hidden">
           <span className={cx('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', validation.emptySlots ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700')}>
             <CalendarDays className="w-3.5 h-3.5" />
-            {validation.emptySlots ? `${validation.emptySlots} unfilled slot${validation.emptySlots > 1 ? 's' : ''}` : `All ${monthShifts} shifts filled`}
+            {validation.emptySlots ? t('v.unfilled', { count: validation.emptySlots }) : t('v.allFilled', { n: monthShifts })}
           </span>
           <button type="button" disabled={!ruleIssues} onClick={() => setShowIssues(v => !v)}
             className={cx('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', ruleIssues ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-emerald-50 text-emerald-700')}>
             <AlertTriangle className="w-3.5 h-3.5" />
-            {ruleIssues ? `${ruleIssues} rule issue${ruleIssues > 1 ? 's' : ''} — ${showIssues ? 'hide' : 'show'}` : 'No rule issues'}
+            {ruleIssues ? `${t('q.issues', { count: ruleIssues })} — ${showIssues ? t('v.hide') : t('v.show')}` : t('v.noIssues')}
           </button>
           {version.targets && (
             <span className={cx('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', gap < 1 ? 'bg-emerald-50 text-emerald-700' : gap < 2 ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700')}>
               <Scale className="w-3.5 h-3.5" />
-              {gap < 1 ? 'Everyone within 1 shift of fair share' : `Someone is ${gap} shifts from fair share`}
+              {gap < 1 ? t('v.fairOk') : t('v.fairGap', { n: gap })}
             </span>
           )}
           {version.targets ? (
             <span className={cx('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', fairness.maxWeekendGap < 1 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>
               <Star className="w-3.5 h-3.5" />
-              {fairness.maxWeekendGap < 1 ? 'Weekends shared fairly' : `Weekends: someone is ${Math.round(fairness.maxWeekendGap * 10) / 10} from fair share`}
+              {fairness.maxWeekendGap < 1 ? t('v.weekendsOk') : t('v.weekendsGap', { n: Math.round(fairness.maxWeekendGap * 10) / 10 })}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium bg-slate-100 text-slate-700">
               <Star className="w-3.5 h-3.5" />
-              Weekends: {fairness.weekendRange[0] === fairness.weekendRange[1] ? `${fairness.weekendRange[0]} each` : `${fairness.weekendRange[0]}–${fairness.weekendRange[1]} per person`}
+              {fairness.weekendRange[0] === fairness.weekendRange[1] ? t('v.weekendsEach', { n: fairness.weekendRange[0] }) : t('v.weekendsRange', { lo: fairness.weekendRange[0], hi: fairness.weekendRange[1] })}
             </span>
           )}
         </div>
@@ -139,22 +141,22 @@ export const VersionView: React.FC<{
 
         {changed && (
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 print:hidden">
-            The rules have changed since this version was generated. Generate a new version to apply them (locked days and pinned shifts are kept).
+            {t('v.rulesChanged')}
           </div>
         )}
       </Card>
 
       <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
-        <Segmented value={view} onChange={setView} ariaLabel="View" options={[
-          { value: 'calendar', label: <span className="flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> Calendar</span> },
-          { value: 'fairness', label: <span className="flex items-center gap-1.5"><Scale className="w-4 h-4" /> Fairness</span> },
-          { value: 'payroll', label: <span className="flex items-center gap-1.5"><Wallet className="w-4 h-4" /> Payroll</span> },
+        <Segmented value={view} onChange={setView} ariaLabel={t('v.view')} options={[
+          { value: 'calendar', label: <span className="flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> {t('v.calendar')}</span> },
+          { value: 'fairness', label: <span className="flex items-center gap-1.5"><Scale className="w-4 h-4" /> {t('v.fairness')}</span> },
+          { value: 'payroll', label: <span className="flex items-center gap-1.5"><Wallet className="w-4 h-4" /> {t('v.payroll')}</span> },
         ]} />
         {view === 'calendar' && (
           <div className="hidden md:block">
-            <Segmented size="sm" value={calendarMode} onChange={setCalendarMode} ariaLabel="Calendar layout" options={[
-              { value: 'grid', label: <span className="flex items-center gap-1"><LayoutGrid className="w-3.5 h-3.5" /> Month</span> },
-              { value: 'list', label: <span className="flex items-center gap-1"><List className="w-3.5 h-3.5" /> List</span> },
+            <Segmented size="sm" value={calendarMode} onChange={setCalendarMode} ariaLabel={t('v.layout')} options={[
+              { value: 'grid', label: <span className="flex items-center gap-1"><LayoutGrid className="w-3.5 h-3.5" /> {t('v.month')}</span> },
+              { value: 'list', label: <span className="flex items-center gap-1"><List className="w-3.5 h-3.5" /> {t('v.list')}</span> },
             ]} />
           </div>
         )}
@@ -173,7 +175,7 @@ export const VersionView: React.FC<{
               onRemove={onRemove} onTogglePin={onTogglePin} onToggleLock={onToggleLock} onEditDay={setDayEdit} />
           </div>
           <p className="text-xs text-slate-500 print:hidden">
-            Tap a name to change or remove it, or an unfilled slot to assign someone. <b>Lock</b> a day or <b>pin</b> a shift to keep it when you generate a new version.
+            {t('v.calendarHint')}
           </p>
         </>
       )}
@@ -196,8 +198,8 @@ export const VersionView: React.FC<{
       )}
 
       {dayEdit && (
-        <Modal open onClose={() => setDayEdit(null)} title={`Special day · ${formatDayLabel(dayEdit)}`}>
-          <p className="text-xs text-slate-500 mb-3">Changes apply to the rules for this date. Generate a new version to reschedule around them.</p>
+        <Modal open onClose={() => setDayEdit(null)} title={t('v.specialTitle', { date: formatDayLabel(dayEdit) })}>
+          <p className="text-xs text-slate-500 mb-3">{t('v.specialHint')}</p>
           <SpecialDayForm
             config={config}
             initialDate={dayEdit}

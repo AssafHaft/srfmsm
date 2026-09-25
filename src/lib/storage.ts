@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   selectedVersion: 'shiftmaster_selected_version',
   months: 'shiftmaster_months',
   ui: 'shiftmaster_ui',
+  github: 'shiftmaster_github', // sync settings incl. token: this browser only
+  syncMeta: 'shiftmaster_sync',
 } as const;
 
 export function readStored<T>(key: string, normalize: (raw: unknown) => T, fallback: () => T): T {

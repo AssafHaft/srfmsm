@@ -9,6 +9,7 @@ import { normalizeEmployees, normalizeMonthSetups, normalizeVersions } from '../
 import { monthKey } from '../lib/dates';
 import { legacyStats } from '../lib/stats';
 import { resolveContinuity } from '../lib/continuity';
+import { setCurrentLang, type Lang } from '../i18n';
 
 export type Tab = 'schedule' | 'workers' | 'rules';
 
@@ -17,11 +18,16 @@ export interface UiState {
   year: number;
   month: number;
   calendarMode: 'grid' | 'list';
+  lang: Lang;
 }
+
+const browserLang = (): Lang => {
+  try { return navigator.language?.toLowerCase().startsWith('he') ? 'he' : 'en'; } catch { return 'en'; }
+};
 
 const defaultUi = (): UiState => {
   const now = new Date();
-  return { tab: 'schedule', year: now.getFullYear(), month: now.getMonth(), calendarMode: 'grid' };
+  return { tab: 'schedule', year: now.getFullYear(), month: now.getMonth(), calendarMode: 'grid', lang: browserLang() };
 };
 
 const normalizeUi = (raw: unknown): UiState => {
@@ -32,6 +38,7 @@ const normalizeUi = (raw: unknown): UiState => {
     year: Number.isInteger(r.year) && r.year! > 2000 && r.year! < 2200 ? r.year! : d.year,
     month: Number.isInteger(r.month) && r.month! >= 0 && r.month! <= 11 ? r.month! : d.month,
     calendarMode: r.calendarMode === 'list' ? 'list' : 'grid',
+    lang: r.lang === 'he' || r.lang === 'en' ? r.lang : d.lang,
   };
 };
 
@@ -65,7 +72,9 @@ export function useAppState() {
   }, normalizeUi);
 
   const storageError = e1 || e2 || e3;
-  const { year, month } = ui;
+  const { year, month, lang } = ui;
+  // Library code (labels, rule messages) reads the language from here
+  setCurrentLang(lang);
   const key = monthKey(year, month);
 
   const monthVersions = useMemo(
@@ -81,7 +90,8 @@ export function useAppState() {
   const monthSetup = monthSetups[key];
   const continuity = useMemo(
     () => resolveContinuity(versions, year, month, monthSetup, employees, config),
-    [versions, year, month, monthSetup, employees, config]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [versions, year, month, monthSetup, employees, config, lang]
   );
 
   const setMonthSetup = useCallback((update: (s: MonthSetup) => MonthSetup) => {
@@ -90,6 +100,7 @@ export function useAppState() {
 
   const goToMonth = useCallback((y: number, m: number) => setUi(u => ({ ...u, year: y, month: m })), [setUi]);
   const setTab = useCallback((tab: Tab) => setUi(u => ({ ...u, tab })), [setUi]);
+  const setLang = useCallback((lang: Lang) => setUi(u => ({ ...u, lang })), [setUi]);
 
   // ----- Version edits -----
 
@@ -181,7 +192,7 @@ export function useAppState() {
     versions, setVersions,
     selectedVersionId, setSelectedVersionId,
     monthSetups, setMonthSetups, monthSetup, setMonthSetup,
-    ui, setUi, setTab, goToMonth,
+    ui, setUi, setTab, setLang, goToMonth,
     monthVersions, currentVersion, continuity,
     assign, unassign, togglePin, toggleLock, markFinal, renameVersion, deleteVersion, addVersion,
     storageError,

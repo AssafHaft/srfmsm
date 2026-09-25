@@ -1,6 +1,7 @@
 // Files in and out: schedule CSV/Excel export, CSV import, JSON backups.
 import { DailySchedule, DayAssignmentMap, Employee, MonthSetup, ScheduleVersion, ShiftConfig } from '../types';
-import { addDays, formatDateKey, isDateKey, parseDateKey, WEEKDAYS_SHORT } from './dates';
+import { addDays, formatDateKey, isDateKey, parseDateKey, weekdayShort } from './dates';
+import { translate as tr } from '../i18n';
 import { normalizeConfig, normalizeEmployee } from './config';
 import { legacyStats } from './stats';
 
@@ -57,25 +58,25 @@ export function scheduleToExcelHtml(version: ScheduleVersion, nameOf: (id: strin
   const w = widths(version.schedule);
   const th = (t: string, bg: string) => `<th style="background:${bg};border:1px solid #94a3b8;padding:4px">${escapeHtml(t)}</th>`;
   const td = (t: string, bg: string) => `<td style="background:${bg};border:1px solid #cbd5e1;padding:4px">${escapeHtml(t)}</td>`;
-  let head = th('Date', '#e2e8f0') + th('Day', '#e2e8f0');
-  for (let i = 0; i < w.day; i++) head += th(`Day worker ${i + 1}`, '#fef3c7');
-  for (let i = 0; i < w.night; i++) head += th(`Night worker ${i + 1}`, '#e0e7ff');
+  let head = th(tr('x.date'), '#e2e8f0') + th(tr('x.weekday'), '#e2e8f0');
+  for (let i = 0; i < w.day; i++) head += th(tr('x.dayWorker', { n: i + 1 }), '#fef3c7');
+  for (let i = 0; i < w.night; i++) head += th(tr('x.nightWorker', { n: i + 1 }), '#e0e7ff');
   const rows = version.schedule.map(row => {
     const bg = row.isPadding ? '#f1f5f9' : '#ffffff';
-    let cells = td(row.date + (row.isPadding ? ' (other month)' : ''), bg) + td(WEEKDAYS_SHORT[parseDateKey(row.date).getDay()], bg);
+    let cells = td(row.date + (row.isPadding ? ` (${tr('x.otherMonth')})` : ''), bg) + td(weekdayShort(parseDateKey(row.date).getDay()), bg);
     for (let i = 0; i < w.day; i++) cells += td(row.dayShift[i] ? nameOf(row.dayShift[i]) : '', bg);
     for (let i = 0; i < w.night; i++) cells += td(row.nightShift[i] ? nameOf(row.nightShift[i]) : '', bg);
     return `<tr>${cells}</tr>`;
   }).join('');
-  const sumHead = ['Worker', 'Shifts', 'Day', 'Night', 'Weekend', 'Hours', 'Est. pay (NIS)'].map(t => th(t, '#e2e8f0')).join('');
+  const sumHead = (['x.worker', 'x.shifts', 'x.day', 'x.night', 'x.weekend', 'x.hours', 'x.pay'] as const).map(k => th(tr(k), '#e2e8f0')).join('');
   const sumRows = summary.map(r => `<tr>${[r.name, r.shifts, r.day, r.night, r.weekend, r.hours.toFixed(1), r.pay.toFixed(2)].map(v => td(String(v), '#ffffff')).join('')}</tr>`).join('');
   return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head>
-<body style="font-family:Arial,sans-serif">
+<body style="font-family:Arial,sans-serif" dir="${tr('dir')}">
 <h3>${escapeHtml(version.name)}</h3>
 <table style="border-collapse:collapse"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>
 <br/>
-<h3>Summary (month only)</h3>
+<h3>${escapeHtml(tr('x.summary'))}</h3>
 <table style="border-collapse:collapse"><thead><tr>${sumHead}</tr></thead><tbody>${sumRows}</tbody></table>
 </body></html>`;
 }
@@ -128,7 +129,7 @@ export interface CsvImportResult {
 
 export function parseScheduleCSV(text: string, employees: Employee[]): CsvImportResult {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
-  if (lines.length < 2) throw new Error('The file has no schedule rows.');
+  if (lines.length < 2) throw new Error(tr('csv.noRows'));
   const headers = splitCsvLine(lines[0]).map(h => h.toLowerCase());
   const dayCols: number[] = [];
   const nightCols: number[] = [];
@@ -137,7 +138,7 @@ export function parseScheduleCSV(text: string, employees: Employee[]): CsvImport
     if (/day (shift )?worker|morning/.test(h)) dayCols.push(i);
     else if (/night (shift )?worker|evening/.test(h)) nightCols.push(i);
   });
-  if (dayCols.length + nightCols.length === 0) throw new Error('No "Day Shift Worker" / "Night Shift Worker" columns found.');
+  if (dayCols.length + nightCols.length === 0) throw new Error(tr('csv.noColumns'));
   const rows = lines.slice(1).map(splitCsvLine);
   if (dateCol < 0) dateCol = 0;
 
@@ -152,7 +153,7 @@ export function parseScheduleCSV(text: string, employees: Employee[]): CsvImport
   const dmy = score(c => c.iso || c.dmy);
   const mdy = score(c => c.iso || c.mdy);
   const keys = (mdy.ok > dmy.ok ? mdy : dmy).keys;
-  if (keys.filter(Boolean).length === 0) throw new Error('No dates found in the file.');
+  if (keys.filter(Boolean).length === 0) throw new Error(tr('csv.noDates'));
 
   const byName = new Map(employees.map(e => [normalizeName(e.name), e.id]));
   const unmatched = new Set<string>();
@@ -194,7 +195,7 @@ export function buildBackup(data: AppData): string {
 export function parseBackup(text: string): AppData & { exportedAt?: string } {
   const data = JSON.parse(text);
   if (data?.app !== 'ShiftMaster' || !Array.isArray(data.employees) || !data.config || !Array.isArray(data.versions)) {
-    throw new Error('This file is not a ShiftMaster backup.');
+    throw new Error(tr('backup.invalid'));
   }
   return {
     employees: normalizeEmployees(data.employees),
@@ -281,7 +282,7 @@ export function scheduleToText(version: ScheduleVersion, nameOf: (id: string) =>
   version.schedule.forEach(d => {
     if (d.isPadding) return;
     const dt = parseDateKey(d.date);
-    const label = `${WEEKDAYS_SHORT[dt.getDay()]} ${dt.getDate()}/${dt.getMonth() + 1}`;
+    const label = `${weekdayShort(dt.getDay())} ${dt.getDate()}/${dt.getMonth() + 1}`;
     const day = d.dayShift.map(nameOf).join(', ') || '—';
     const night = d.nightShift.map(nameOf).join(', ') || '—';
     lines.push(`${label}: ☀️ ${day} | 🌙 ${night}`);
