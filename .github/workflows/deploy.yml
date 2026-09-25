@@ -32,6 +32,8 @@ jobs:
       - name: Install dependencies
         # Used 'npm install' instead of 'npm ci' so it generates the lockfile automatically
         run: npm install
+      - name: Test
+        run: npm test
       - name: Build
         run: npm run build
       - name: Upload artifact
