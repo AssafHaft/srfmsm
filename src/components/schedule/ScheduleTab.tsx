@@ -107,6 +107,8 @@ export const ScheduleTab: React.FC<{ app: AppState; toast: (text: string, tone?:
             employees={employees}
             config={config}
             setConfig={app.setConfig}
+            sheetNotes={app.sheetNotes}
+            setSheetNotes={app.setSheetNotes}
             calendarMode={ui.calendarMode}
             setCalendarMode={m => app.setUi(u => ({ ...u, calendarMode: m }))}
             onAssign={(date, shift, empId, replaceId) => app.assign(currentVersion.id, date, shift, empId, replaceId)}

@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
-  AlertTriangle, CalendarDays, CheckCircle2, ClipboardCopy, Download, FileSpreadsheet, LayoutGrid, List, Printer, Scale, Star, Wallet
+  AlertTriangle, CalendarDays, CheckCircle2, ClipboardCopy, Download, FileSpreadsheet, LayoutGrid, List, Printer, Scale, Sheet, Star, Wallet
 } from 'lucide-react';
-import { Employee, ScheduleVersion, ShiftConfig, ShiftType } from '../../types';
+import { Employee, ScheduleVersion, SheetNotes, ShiftConfig, ShiftType } from '../../types';
 import { formatDateTime, formatDayLabel, formatShortDate } from '../../lib/dates';
-import { downloadFile, scheduleToCSV, scheduleToExcelHtml, scheduleToText } from '../../lib/io';
+import { downloadFile, scheduleToCSV, scheduleToText, scheduleWorkbook, XLSX_TYPE } from '../../lib/io';
+import { buildTeamSheet, teamSheetFileName, teamSheetXlsx } from '../../lib/teamSheet';
+import { TeamSheetView } from './TeamSheetView';
 import { calculatePayroll } from '../../lib/payroll';
 import { Badge, Button, Card, Menu, MenuItem, Modal, Segmented, cx, isEmbedded } from '../ui';
 import { CalendarView } from './CalendarView';
@@ -14,13 +16,15 @@ import { makePeople, rulesChangedSince, useVersionInsights } from './derived';
 import { applySpecialDays, SpecialDayForm } from '../RulesTab';
 import { useI18n } from '../../i18n';
 
-type View = 'calendar' | 'fairness' | 'payroll';
+type View = 'calendar' | 'sheet' | 'fairness' | 'payroll';
 
 export const VersionView: React.FC<{
   version: ScheduleVersion;
   employees: Employee[];
   config: ShiftConfig;
   setConfig: (c: ShiftConfig) => void;
+  sheetNotes: SheetNotes;
+  setSheetNotes: (update: (n: SheetNotes) => SheetNotes) => void;
   calendarMode: 'grid' | 'list';
   setCalendarMode: (m: 'grid' | 'list') => void;
   onAssign: (date: string, shift: ShiftType, empId: string, replaceId?: string) => void;
@@ -29,9 +33,9 @@ export const VersionView: React.FC<{
   onToggleLock: (date: string) => void;
   onFinal: () => void;
   toast: (text: string, tone?: 'ok' | 'error') => void;
-}> = ({ version, employees, config, setConfig, calendarMode, setCalendarMode, onAssign, onRemove, onTogglePin, onToggleLock, onFinal, toast }) => {
+}> = ({ version, employees, config, setConfig, sheetNotes, setSheetNotes, calendarMode, setCalendarMode, onAssign, onRemove, onTogglePin, onToggleLock, onFinal, toast }) => {
   const [view, setView] = useState<View>('calendar');
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [slot, setSlot] = useState<SlotRef | null>(null);
   const [dayEdit, setDayEdit] = useState<string | null>(null);
   const [showIssues, setShowIssues] = useState(false);
@@ -57,7 +61,14 @@ export const VersionView: React.FC<{
       name: people.nameOf(id), shifts: stats[id].shifts, day: stats[id].day, night: stats[id].night,
       weekend: stats[id].weekend, hours: stats[id].hours, pay: pay[id]?.estimatedPay || 0,
     }));
-    downloadFile(`schedule_${version.month + 1}_${version.year}.xls`, scheduleToExcelHtml(version, people.nameOf, summary), 'application/vnd.ms-excel;charset=utf-8');
+    downloadFile(`schedule_${version.month + 1}_${version.year}.xlsx`, scheduleWorkbook(version, people.nameOf, summary, lang === 'he'), XLSX_TYPE);
+  };
+  const exportTeamSheet = () => {
+    if (embedded) return blocked();
+    const sheet = buildTeamSheet(version, insights.config, sheetNotes);
+    // Every worker gets a color rule, also names not in this month's schedule
+    const list = [...employees, ...Object.values(version.people || {})].map(p => ({ name: p.name, color: p.color }));
+    downloadFile(teamSheetFileName(sheet), teamSheetXlsx(sheet, people.nameOf, list, lang === 'he'), XLSX_TYPE);
   };
   const copyText = async () => {
     try {
@@ -90,10 +101,11 @@ export const VersionView: React.FC<{
             </Button>
             <Menu button={toggle => <Button size="sm" onClick={toggle}><Download className="w-4 h-4" /> {t('v.export')}</Button>}>
               {close => <>
-                <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint={t('v.excelHint')} onClick={() => { exportExcel(); close(); }}>Excel</MenuItem>
+                <MenuItem icon={<Sheet className="w-4 h-4" />} hint={t('v.excelTeamHint')} onClick={() => { exportTeamSheet(); close(); }}>{t('v.excelTeam')}</MenuItem>
+                <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint={t('v.excelHint')} onClick={() => { exportExcel(); close(); }}>{t('v.excelData')}</MenuItem>
                 <MenuItem icon={<Download className="w-4 h-4" />} hint={t('v.csvHint')} onClick={() => { exportCsv(); close(); }}>CSV</MenuItem>
                 <MenuItem icon={<ClipboardCopy className="w-4 h-4" />} hint={t('v.textHint')} onClick={() => { copyText(); close(); }}>{t('v.text')}</MenuItem>
-                {!embedded && <MenuItem icon={<Printer className="w-4 h-4" />} hint={t('v.printHint')} onClick={() => { close(); setView('calendar'); setTimeout(() => window.print(), 100); }}>{t('v.print')}</MenuItem>}
+                {!embedded && <MenuItem icon={<Printer className="w-4 h-4" />} hint={t('v.printHint')} onClick={() => { close(); if (view !== 'sheet') setView('calendar'); setTimeout(() => window.print(), 100); }}>{t('v.print')}</MenuItem>}
               </>}
             </Menu>
           </div>
@@ -149,6 +161,7 @@ export const VersionView: React.FC<{
       <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
         <Segmented value={view} onChange={setView} ariaLabel={t('v.view')} options={[
           { value: 'calendar', label: <span className="flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> {t('v.calendar')}</span> },
+          { value: 'sheet', label: <span className="flex items-center gap-1.5"><Sheet className="w-4 h-4" /> {t('v.sheet')}</span> },
           { value: 'fairness', label: <span className="flex items-center gap-1.5"><Scale className="w-4 h-4" /> {t('v.fairness')}</span> },
           { value: 'payroll', label: <span className="flex items-center gap-1.5"><Wallet className="w-4 h-4" /> {t('v.payroll')}</span> },
         ]} />
@@ -178,6 +191,10 @@ export const VersionView: React.FC<{
             {t('v.calendarHint')}
           </p>
         </>
+      )}
+      {view === 'sheet' && (
+        <TeamSheetView version={version} config={insights.config} people={people} notes={sheetNotes} setNotes={setSheetNotes}
+          onOpenSlot={(date, shift, currentId) => setSlot({ date, shift, currentId })} onEditDay={setDayEdit} onDownload={exportTeamSheet} />
       )}
       {view === 'fairness' && <FairnessTable version={version} employees={employees} config={insights.config} stats={stats} people={people} />}
       {view === 'payroll' && <PayrollTable version={version} employees={employees} config={insights.config} people={people} />}

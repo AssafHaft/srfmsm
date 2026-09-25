@@ -9,6 +9,7 @@ export const STORAGE_KEYS = {
   selectedVersion: 'shiftmaster_selected_version',
   months: 'shiftmaster_months',
   ui: 'shiftmaster_ui',
+  sheet: 'shiftmaster_sheet', // events, notes and extra-row text of the team sheet
   github: 'shiftmaster_github', // sync settings incl. token: this browser only
   syncMeta: 'shiftmaster_sync',
 } as const;

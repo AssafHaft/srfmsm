@@ -1,11 +1,11 @@
 // All persistent app state and the actions that change it.
 import { useCallback, useMemo } from 'react';
 import {
-  DailySchedule, Employee, MonthSetup, ScheduleVersion, ShiftConfig, ShiftType
+  DailySchedule, Employee, MonthSetup, ScheduleVersion, SheetNotes, ShiftConfig, ShiftType
 } from '../types';
 import { STORAGE_KEYS, usePersistentState } from '../lib/storage';
 import { defaultConfig, defaultEmployees, normalizeConfig } from '../lib/config';
-import { normalizeEmployees, normalizeMonthSetups, normalizeVersions } from '../lib/io';
+import { emptySheetNotes, normalizeEmployees, normalizeMonthSetups, normalizeSheetNotes, normalizeVersions } from '../lib/io';
 import { monthKey } from '../lib/dates';
 import { legacyStats } from '../lib/stats';
 import { resolveContinuity } from '../lib/continuity';
@@ -59,6 +59,7 @@ export function useAppState() {
   const [selectedVersionId, setSelectedVersionId] = usePersistentState<string | null>(
     STORAGE_KEYS.selectedVersion, () => null, v => (typeof v === 'string' ? v : null));
   const [monthSetups, setMonthSetups] = usePersistentState<Record<string, MonthSetup>>(STORAGE_KEYS.months, () => ({}), normalizeMonthSetups);
+  const [sheetNotes, setSheetNotes, e4] = usePersistentState<SheetNotes>(STORAGE_KEYS.sheet, emptySheetNotes, normalizeSheetNotes);
   const [ui, setUi] = usePersistentState<UiState>(STORAGE_KEYS.ui, () => {
     // First run of this build: open the month of the schedule that was open
     const d = defaultUi();
@@ -71,7 +72,7 @@ export function useAppState() {
     return d;
   }, normalizeUi);
 
-  const storageError = e1 || e2 || e3;
+  const storageError = e1 || e2 || e3 || e4;
   const { year, month, lang } = ui;
   // Library code (labels, rule messages) reads the language from here
   setCurrentLang(lang);
@@ -192,6 +193,7 @@ export function useAppState() {
     versions, setVersions,
     selectedVersionId, setSelectedVersionId,
     monthSetups, setMonthSetups, monthSetup, setMonthSetup,
+    sheetNotes, setSheetNotes,
     ui, setUi, setTab, setLang, goToMonth,
     monthVersions, currentVersion, continuity,
     assign, unassign, togglePin, toggleLock, markFinal, renameVersion, deleteVersion, addVersion,

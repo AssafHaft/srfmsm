@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState } from './useAppState';
 import { STORAGE_KEYS, usePersistentState } from '../lib/storage';
-import { buildBackup, parseBackup } from '../lib/io';
+import { buildBackup, hasSheetNotes, parseBackup } from '../lib/io';
 import {
   SyncError, SyncSettings, fingerprint, isConfigured, normalizeSyncSettings, defaultSyncSettings, readRemote, writeRemote,
 } from '../lib/githubSync';
@@ -25,8 +25,10 @@ const normalizeMeta = (raw: unknown): SyncMeta => {
   };
 };
 
-const dataFingerprint = (d: Pick<AppState, 'employees' | 'config' | 'versions' | 'monthSetups'>) =>
-  fingerprint(JSON.stringify([d.employees, d.config, d.versions, d.monthSetups]));
+// Empty team-sheet notes are left out, so data saved before they existed
+// still counts as saved
+const dataFingerprint = (d: Pick<AppState, 'employees' | 'config' | 'versions' | 'monthSetups' | 'sheetNotes'>) =>
+  fingerprint(JSON.stringify([d.employees, d.config, d.versions, d.monthSetups, ...(hasSheetNotes(d.sheetNotes) ? [d.sheetNotes] : [])]));
 
 const savedAtOf = (text: string): string | undefined => {
   try { return JSON.parse(text)?.exportedAt; } catch { return undefined; }
@@ -46,7 +48,7 @@ export function useGithubSync(
   const current = useMemo(
     () => dataFingerprint(app),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [app.employees, app.config, app.versions, app.monthSetups]
+    [app.employees, app.config, app.versions, app.monthSetups, app.sheetNotes]
   );
   const dirty = configured && meta.fingerprint !== current;
 
@@ -68,7 +70,7 @@ export function useGithubSync(
     try {
       const text = buildBackup({
         employees: app.employees, config: app.config, versions: app.versions,
-        selectedVersionId: app.selectedVersionId, monthSetups: app.monthSetups,
+        selectedVersionId: app.selectedVersionId, monthSetups: app.monthSetups, sheetNotes: app.sheetNotes,
       });
       const savedAt = savedAtOf(text);
       const message = `ShiftMaster data: ${app.employees.length} workers, ${app.versions.length} versions`;
@@ -118,6 +120,7 @@ export function useGithubSync(
       app.setConfig(data.config);
       app.setVersions(data.versions);
       app.setMonthSetups(data.monthSetups);
+      app.setSheetNotes(data.sheetNotes);
       if (data.selectedVersionId) app.setSelectedVersionId(data.selectedVersionId);
       setMeta({ sha: remote.sha, syncedAt: data.exportedAt, fingerprint: dataFingerprint(data) });
       setNewer(null);

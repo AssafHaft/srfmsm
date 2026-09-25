@@ -52,7 +52,14 @@ from this app, type in how last month ended, or start fresh.
   distance from fair share). Mark the one you publish as final.
 - Views: calendar (month grid or list), fairness table, payroll estimate (regular up to
   8h/day, 125% for hours 8–10, 150% beyond).
-- Export to Excel (with a summary) or CSV, copy as text for WhatsApp, or print / save as PDF.
+- **Team sheet**: the month week by week in the layout sent to the team (dates, morning shift,
+  an extra row such as gardening, night shift, events, notes), with each worker's color. Events,
+  notes and the extra row are typed straight into it; they belong to the dates, so every version
+  of the month shows them. Notes can repeat every week (e.g. every Thursday), and holidays and
+  closed days come from the special days. **Download Excel** gives the same sheet as an .xlsx
+  (right to left in Hebrew, fits one A4 page; names stay colored when edited in Excel).
+- Other exports: Excel with one row per day plus a per-worker summary, CSV (can be imported back),
+  copy as text for WhatsApp, or print / save as PDF.
 - Special days (holidays, events, closures) can change staffing and hours for a date.
 
 ## Language
@@ -91,7 +98,8 @@ Code layout:
 
 - `src/lib/engine/` — scheduling engine (`model.ts` problem setup, `targets.ts` fair shares,
   `solver.ts` construction + local search)
-- `src/lib/` — validation, stats, payroll, month continuity, import/export, storage
+- `src/lib/` — validation, stats, payroll, month continuity, import/export, storage,
+  team sheet layout (`teamSheet.ts`) and a small .xlsx writer (`xlsx.ts`)
 - `src/components/` — UI (Schedule, Workers, Rules, GitHub sync dialog)
 - `src/i18n/` — English and Hebrew strings
 - `tests/` — Vitest suites

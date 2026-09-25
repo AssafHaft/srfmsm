@@ -149,6 +149,21 @@ export interface ScheduleVersion {
   seed?: number;
 }
 
+// Text for the team sheet that is not part of the schedule itself. These are
+// facts about dates, so every version of a month shows the same text.
+export interface DayNote {
+  events?: string;
+  notes?: string; // unset = the weekly note for that weekday
+  duty?: string;  // extra row (e.g. gardening): who, free text
+}
+
+export interface SheetNotes {
+  days: Record<string, DayNote>;       // YYYY-MM-DD -> text
+  weekly: Record<number, string>;      // weekday -> note repeated every week
+  dutyLabel?: string;                  // name of the extra row (unset = default)
+  dutyOff?: boolean;                   // hide the extra row
+}
+
 // Per-month generation settings: where the start of the month comes from
 export interface MonthSetup {
   // auto = previous month's schedule in the app, custom = imported/typed in,

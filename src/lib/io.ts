@@ -1,14 +1,15 @@
 // Files in and out: schedule CSV/Excel export, CSV import, JSON backups.
-import { DailySchedule, DayAssignmentMap, Employee, MonthSetup, ScheduleVersion, ShiftConfig } from '../types';
+import { DailySchedule, DayAssignmentMap, DayNote, Employee, MonthSetup, ScheduleVersion, SheetNotes, ShiftConfig } from '../types';
 import { addDays, formatDateKey, isDateKey, parseDateKey, weekdayShort } from './dates';
+import { buildXlsx, CellStyle, excelDate, safeSheetName, Sheet } from './xlsx';
 import { translate as tr } from '../i18n';
 import { normalizeConfig, normalizeEmployee } from './config';
 import { legacyStats } from './stats';
 
 // ---------- Download helper ----------
 
-export function downloadFile(filename: string, content: string, type: string): void {
-  const blob = new Blob([content], { type });
+export function downloadFile(filename: string, content: string | Uint8Array, type: string): void {
+  const blob = new Blob([content as BlobPart], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -42,8 +43,6 @@ export function scheduleToCSV(version: ScheduleVersion, nameOf: (id: string) => 
   return '﻿' + headers.join(',') + '\n' + lines.join('\n') + '\n';
 }
 
-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
 export interface SummaryRow {
   name: string;
   shifts: number;
@@ -54,31 +53,49 @@ export interface SummaryRow {
   pay: number;
 }
 
-export function scheduleToExcelHtml(version: ScheduleVersion, nameOf: (id: string) => string, summary: SummaryRow[]): string {
+export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+// Excel workbook: one row per day, plus a per-worker summary sheet
+export function scheduleWorkbook(version: ScheduleVersion, nameOf: (id: string) => string, summary: SummaryRow[], rtl: boolean): Uint8Array {
   const w = widths(version.schedule);
-  const th = (t: string, bg: string) => `<th style="background:${bg};border:1px solid #94a3b8;padding:4px">${escapeHtml(t)}</th>`;
-  const td = (t: string, bg: string) => `<td style="background:${bg};border:1px solid #cbd5e1;padding:4px">${escapeHtml(t)}</td>`;
-  let head = th(tr('x.date'), '#e2e8f0') + th(tr('x.weekday'), '#e2e8f0');
-  for (let i = 0; i < w.day; i++) head += th(tr('x.dayWorker', { n: i + 1 }), '#fef3c7');
-  for (let i = 0; i < w.night; i++) head += th(tr('x.nightWorker', { n: i + 1 }), '#e0e7ff');
-  const rows = version.schedule.map(row => {
-    const bg = row.isPadding ? '#f1f5f9' : '#ffffff';
-    let cells = td(row.date + (row.isPadding ? ` (${tr('x.otherMonth')})` : ''), bg) + td(weekdayShort(parseDateKey(row.date).getDay()), bg);
-    for (let i = 0; i < w.day; i++) cells += td(row.dayShift[i] ? nameOf(row.dayShift[i]) : '', bg);
-    for (let i = 0; i < w.night; i++) cells += td(row.nightShift[i] ? nameOf(row.nightShift[i]) : '', bg);
-    return `<tr>${cells}</tr>`;
-  }).join('');
-  const sumHead = (['x.worker', 'x.shifts', 'x.day', 'x.night', 'x.weekend', 'x.hours', 'x.pay'] as const).map(k => th(tr(k), '#e2e8f0')).join('');
-  const sumRows = summary.map(r => `<tr>${[r.name, r.shifts, r.day, r.night, r.weekend, r.hours.toFixed(1), r.pay.toFixed(2)].map(v => td(String(v), '#ffffff')).join('')}</tr>`).join('');
-  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head>
-<body style="font-family:Arial,sans-serif" dir="${tr('dir')}">
-<h3>${escapeHtml(version.name)}</h3>
-<table style="border-collapse:collapse"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>
-<br/>
-<h3>${escapeHtml(tr('x.summary'))}</h3>
-<table style="border-collapse:collapse"><thead><tr>${sumHead}</tr></thead><tbody>${sumRows}</tbody></table>
-</body></html>`;
+  const thin = { left: 'thin', right: 'thin', top: 'thin', bottom: 'thin' } as const;
+  const head: CellStyle = { font: { bold: true }, fill: 'E2E8F0', border: thin, h: 'center', v: 'center', wrap: true };
+  const body = (padding: boolean, extra: CellStyle = {}): CellStyle => ({ border: thin, v: 'center', ...(padding ? { fill: 'F1F5F9', font: { color: '64748B' } } : {}), ...extra });
+
+  const days = new Sheet(safeSheetName(tr('x.sheetSchedule')), rtl);
+  days.set(1, 1, version.name, { font: { bold: true, size: 13 } });
+  const headers = [tr('x.date'), tr('x.weekday')];
+  for (let i = 0; i < w.day; i++) headers.push(tr('x.dayWorker', { n: i + 1 }));
+  for (let i = 0; i < w.night; i++) headers.push(tr('x.nightWorker', { n: i + 1 }));
+  headers.forEach((h, c) => days.set(2, c + 1, h, { ...head, fill: c < 2 ? 'E2E8F0' : c < 2 + w.day ? 'FEF3C7' : 'E0E7FF' }));
+  version.schedule.forEach((row, i) => {
+    const r = 3 + i;
+    const pad = !!row.isPadding;
+    days.set(r, 1, excelDate(row.date), body(pad, { numFmt: 'dd/mm/yyyy', h: 'center' }));
+    days.set(r, 2, weekdayShort(parseDateKey(row.date).getDay()), body(pad, { h: 'center' }));
+    for (let k = 0; k < w.day; k++) days.set(r, 3 + k, row.dayShift[k] ? nameOf(row.dayShift[k]) : '', body(pad));
+    for (let k = 0; k < w.night; k++) days.set(r, 3 + w.day + k, row.nightShift[k] ? nameOf(row.nightShift[k]) : '', body(pad));
+  });
+  days.widths.set(1, 12);
+  days.widths.set(2, 8);
+  for (let c = 3; c <= 2 + w.day + w.night; c++) days.widths.set(c, 16);
+  days.print = { fitWidth: 1, fitHeight: 0, margin: 0.4 };
+
+  const sum = new Sheet(safeSheetName(tr('x.sheetSummary'), [days.name]), rtl);
+  sum.set(1, 1, tr('x.summary'), { font: { bold: true, size: 13 } });
+  (['x.worker', 'x.shifts', 'x.day', 'x.night', 'x.weekend', 'x.hours', 'x.pay'] as const)
+    .forEach((k, c) => sum.set(2, c + 1, tr(k), head));
+  summary.forEach((row, i) => {
+    const r = 3 + i;
+    sum.set(r, 1, row.name, body(false));
+    [row.shifts, row.day, row.night, row.weekend].forEach((v, k) => sum.set(r, 2 + k, v, body(false, { h: 'center' })));
+    sum.set(r, 6, Math.round(row.hours * 10) / 10, body(false, { h: 'center', numFmt: '0.0' }));
+    sum.set(r, 7, Math.round(row.pay * 100) / 100, body(false, { numFmt: '#,##0.00' }));
+  });
+  sum.widths.set(1, 20);
+  for (let c = 2; c <= 7; c++) sum.widths.set(c, 11);
+  sum.print = { fitWidth: 1, fitHeight: 0, margin: 0.4 };
+  return buildXlsx([days, sum], { title: version.name });
 }
 
 // ---------- CSV import (date-aware) ----------
@@ -186,6 +203,7 @@ export interface AppData {
   versions: ScheduleVersion[];
   selectedVersionId: string | null;
   monthSetups: Record<string, MonthSetup>;
+  sheetNotes: SheetNotes;
 }
 
 export function buildBackup(data: AppData): string {
@@ -203,6 +221,7 @@ export function parseBackup(text: string): AppData & { exportedAt?: string } {
     versions: normalizeVersions(data.versions),
     selectedVersionId: typeof data.selectedVersionId === 'string' ? data.selectedVersionId : null,
     monthSetups: normalizeMonthSetups(data.monthSetups),
+    sheetNotes: normalizeSheetNotes(data.sheetNotes),
     exportedAt: data.exportedAt,
   };
 }
@@ -273,6 +292,44 @@ export function normalizeMonthSetups(raw: unknown): Record<string, MonthSetup> {
     if (released.length) s.released = released;
     out[k] = s;
   });
+  return out;
+}
+
+export const emptySheetNotes = (): SheetNotes => ({ days: {}, weekly: {} });
+
+export const hasSheetNotes = (n: SheetNotes): boolean =>
+  Object.keys(n.days).length > 0 || Object.keys(n.weekly).length > 0 || n.dutyLabel !== undefined || !!n.dutyOff;
+
+const text = (v: unknown, max = 500): string | undefined =>
+  typeof v === 'string' ? v.replace(/\r\n?/g, '\n').slice(0, max) : undefined;
+
+export function normalizeSheetNotes(raw: unknown): SheetNotes {
+  const out = emptySheetNotes();
+  if (!raw || typeof raw !== 'object') return out;
+  const r = raw as Record<string, any>;
+  if (r.days && typeof r.days === 'object') {
+    Object.entries(r.days as Record<string, any>).forEach(([date, v]) => {
+      if (!isDateKey(date) || !v || typeof v !== 'object') return;
+      const d: DayNote = {};
+      const events = text(v.events);
+      const duty = text(v.duty, 120);
+      const notes = text(v.notes);
+      if (events?.trim()) d.events = events;
+      if (duty?.trim()) d.duty = duty;
+      if (notes !== undefined) d.notes = notes; // '' = no note even on a weekly-note day
+      if (Object.keys(d).length) out.days[date] = d;
+    });
+  }
+  if (r.weekly && typeof r.weekly === 'object') {
+    Object.entries(r.weekly as Record<string, unknown>).forEach(([k, v]) => {
+      const dow = Number(k);
+      const note = text(v);
+      if (Number.isInteger(dow) && dow >= 0 && dow <= 6 && note?.trim()) out.weekly[dow] = note;
+    });
+  }
+  const label = text(r.dutyLabel, 40);
+  if (label !== undefined) out.dutyLabel = label;
+  if (r.dutyOff) out.dutyOff = true;
   return out;
 }
 

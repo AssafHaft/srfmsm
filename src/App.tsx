@@ -49,6 +49,7 @@ const Shell: React.FC<{ app: ReturnType<typeof useAppState> }> = ({ app }) => {
         versions: app.versions,
         selectedVersionId: app.selectedVersionId,
         monthSetups: app.monthSetups,
+        sheetNotes: app.sheetNotes,
       }),
       'application/json'
     );
@@ -71,6 +72,7 @@ const Shell: React.FC<{ app: ReturnType<typeof useAppState> }> = ({ app }) => {
       app.setVersions(data.versions);
       app.setSelectedVersionId(data.selectedVersionId);
       app.setMonthSetups(data.monthSetups);
+      app.setSheetNotes(data.sheetNotes);
       const selected = data.versions.find(v => v.id === data.selectedVersionId) || data.versions[0];
       if (selected) app.goToMonth(selected.year, selected.month);
       toasts.push(t('backup.restored', { workers: data.employees.length, versions: data.versions.length }));
