@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
-  AlertTriangle, CalendarDays, CheckCircle2, ClipboardCopy, Download, FileSpreadsheet, LayoutGrid, List, Printer, Scale, Sheet, Star, Wallet
+  AlertTriangle, CalendarCheck, CalendarDays, CheckCircle2, ClipboardCopy, Download, FileSpreadsheet, LayoutGrid, List, Printer, Scale, Sheet, Star, Wallet
 } from 'lucide-react';
 import { Employee, ScheduleVersion, SheetNotes, ShiftConfig, ShiftType } from '../../types';
 import { formatDateTime, formatDayLabel, formatShortDate } from '../../lib/dates';
 import { downloadFile, scheduleToCSV, scheduleToText, scheduleWorkbook, XLSX_TYPE } from '../../lib/io';
 import { buildTeamSheet, teamSheetFileName, teamSheetXlsx } from '../../lib/teamSheet';
+import { connecteamFileName, teamSheetToConnecteam } from '../../lib/connecteam';
 import { TeamSheetView } from './TeamSheetView';
 import { calculatePayroll } from '../../lib/payroll';
 import { Badge, Button, Card, Menu, MenuItem, Modal, Segmented, cx, isEmbedded } from '../ui';
@@ -70,6 +71,13 @@ export const VersionView: React.FC<{
     const list = [...employees, ...Object.values(version.people || {})].map(p => ({ name: p.name, color: p.color }));
     downloadFile(teamSheetFileName(sheet), teamSheetXlsx(sheet, people.nameOf, list, lang === 'he'), XLSX_TYPE);
   };
+  const exportConnecteam = () => {
+    if (embedded) return blocked();
+    const sheet = buildTeamSheet(version, insights.config, sheetNotes);
+    const { csv, rows } = teamSheetToConnecteam(sheet, people.nameOf);
+    downloadFile(connecteamFileName(sheet), csv, 'text/csv;charset=utf-8');
+    toast(t('v.connecteamDone', { count: rows }));
+  };
   const copyText = async () => {
     try {
       await navigator.clipboard.writeText(scheduleToText(version, people.nameOf));
@@ -102,6 +110,7 @@ export const VersionView: React.FC<{
             <Menu button={toggle => <Button size="sm" onClick={toggle}><Download className="w-4 h-4" /> {t('v.export')}</Button>}>
               {close => <>
                 <MenuItem icon={<Sheet className="w-4 h-4" />} hint={t('v.excelTeamHint')} onClick={() => { exportTeamSheet(); close(); }}>{t('v.excelTeam')}</MenuItem>
+                <MenuItem icon={<CalendarCheck className="w-4 h-4" />} hint={t('v.connecteamHint')} onClick={() => { exportConnecteam(); close(); }}>Connecteam</MenuItem>
                 <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} hint={t('v.excelHint')} onClick={() => { exportExcel(); close(); }}>{t('v.excelData')}</MenuItem>
                 <MenuItem icon={<Download className="w-4 h-4" />} hint={t('v.csvHint')} onClick={() => { exportCsv(); close(); }}>CSV</MenuItem>
                 <MenuItem icon={<ClipboardCopy className="w-4 h-4" />} hint={t('v.textHint')} onClick={() => { copyText(); close(); }}>{t('v.text')}</MenuItem>

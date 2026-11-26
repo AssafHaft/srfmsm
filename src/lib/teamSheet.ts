@@ -11,6 +11,8 @@ import { buildXlsx, CellStyle, excelDate, rangeRef, Rgb, safeSheetName, Sheet } 
 export interface SheetShift {
   full: boolean;   // the only shift of the day, covering all opening hours
   hours: string;   // "05:00 - 15:00"
+  start: string;   // "05:00"
+  end: string;     // "15:00" (earlier than start = the next day)
   ids: string[];
   missing: number; // places still unfilled
 }
@@ -77,6 +79,8 @@ export function buildTeamSheet(version: ScheduleVersion, config: ShiftConfig, no
     const shift = (ids: string[], required: number, from: number, until: number): SheetShift => ({
       full: !both,
       hours: `${clock(from)} - ${clock(until)}`,
+      start: clock(from),
+      end: clock(until),
       ids,
       missing: soloCovered ? 0 : Math.max(0, required - ids.length),
     });

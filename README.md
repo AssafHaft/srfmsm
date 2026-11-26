@@ -58,6 +58,10 @@ from this app, type in how last month ended, or start fresh.
   of the month shows them. Notes can repeat every week (e.g. every Thursday), and holidays and
   closed days come from the special days. **Download Excel** gives the same sheet as an .xlsx
   (right to left in Hebrew, fits one A4 page; names stay colored when edited in Excel).
+- **Connecteam**: a CSV in Connecteam's shift-import template (same columns, UTF-8 with BOM,
+  MM/DD/YYYY dates), one row per worker per shift, with the shift name, hours and the day's
+  holiday, events and notes. Days of the month only; unfilled places are left out. Worker names
+  must match the names in Connecteam.
 - Other exports: Excel with one row per day plus a per-worker summary, CSV (can be imported back),
   copy as text for WhatsApp, or print / save as PDF.
 - Special days (holidays, events, closures) can change staffing and hours for a date.
