@@ -6,6 +6,7 @@ import { setCurrentLang } from '../src/i18n';
 import { gridKeys } from '../src/lib/dates';
 import { DailySchedule, ScheduleVersion, SheetNotes } from '../src/types';
 import { config, team } from './helpers';
+import { CONNECTEAM_HEADERS, connecteamFileName, teamSheetToConnecteam, usDate } from '../src/lib/connecteam';
 
 // Reads the stored (uncompressed) ZIP written by buildXlsx
 const unzip = (bytes: Uint8Array): Record<string, string> => {
@@ -248,5 +249,60 @@ describe('data export', () => {
     expect(cellText(files, 'A3')).toBe(String(excelDate('2026-08-30')));
     expect(cellText(files, 'C3')).toBe('Nitzan');
     expect(files['xl/worksheets/sheet2.xml']).toContain('<v>190.5</v>');
+  });
+});
+
+describe('Connecteam export', () => {
+  const TEMPLATE_HEADER = 'Date,Start,End,Timezone,Unpaid break,Paid break,Shift title,Job,Sub item,Users,Note,Shift tags,Address,Number of users,Require Approval,Tasks';
+
+  const exportSeptember = () => {
+    const v = septemberVersion(date => (date === '2026-09-04' ? { dayShift: ['Golan'], nightShift: [] }
+      : date === '2026-09-20' || date === '2026-09-21' ? { dayShift: [], nightShift: [] }
+      : date === '2026-09-08' ? { nightShift: ['Dan'] } : {}));
+    const notes: SheetNotes = { days: { '2026-09-06': { events: 'Clalit, 80 people', notes: 'Line 1\nLine 2' } }, weekly: { 4: 'Perlite' } };
+    const sheet = buildTeamSheet(v, sheetConfig(), notes);
+    return { sheet, out: teamSheetToConnecteam(sheet, id => (id === 'Dan' ? 'Dan "D" Levi' : id)) };
+  };
+
+  it('matches the Connecteam template: columns, BOM and line endings', () => {
+    const { out, sheet } = exportSeptember();
+    expect(CONNECTEAM_HEADERS.join(',')).toBe(TEMPLATE_HEADER);
+    expect(out.csv.startsWith('\uFEFF' + TEMPLATE_HEADER + '\r\n')).toBe(true);
+    expect(out.csv.endsWith('\r\n')).toBe(true);
+    expect(out.csv.replace(/\r\n/g, '')).not.toMatch(/[\r\n]/); // no stray line breaks inside rows
+    expect(connecteamFileName(sheet)).toBe('connecteam_shifts_09_2026.csv');
+    expect(usDate('2026-09-03')).toBe('09/03/2026');
+  });
+
+  it('writes one row per worker per shift, for the month only', () => {
+    const { out } = exportSeptember();
+    const lines = out.csv.replace('\uFEFF', '').trim().split('\r\n').slice(1);
+    expect(out.rows).toBe(lines.length);
+    expect(lines.some(l => l.startsWith('08/30/2026') || l.startsWith('10/01/2026'))).toBe(false);
+    expect(lines.some(l => l.startsWith('09/20/2026') || l.startsWith('09/21/2026'))).toBe(false);
+    const sept1 = lines.filter(l => l.startsWith('09/01/2026'));
+    expect(sept1).toEqual([
+      '09/01/2026,05:00,15:00,,,,Morning shift,,,Nitzan,,,,,no,',
+      '09/01/2026,14:00,00:00,,,,Night shift,,,"Dan ""D"" Levi",,,,,no,',
+      '09/01/2026,14:00,00:00,,,,Night shift,,,Inbar,,,,,no,',
+    ]);
+    expect(lines.filter(l => l.startsWith('09/04/2026'))).toEqual(['09/04/2026,05:00,19:00,,,,Full shift,,,Golan,,,,,no,']);
+    expect(lines.filter(l => l.startsWith('09/08/2026'))).toHaveLength(2);
+  });
+
+  it('puts the day\'s holiday, events and notes in the note', () => {
+    const { out } = exportSeptember();
+    const lines = out.csv.split('\r\n');
+    expect(lines.find(l => l.startsWith('09/06/2026'))).toContain(',"Clalit, 80 people | Line 1 · Line 2",');
+    expect(lines.find(l => l.startsWith('09/03/2026'))).toContain(',Perlite,');
+    expect(lines.find(l => l.startsWith('09/11/2026'))).toContain(',Rosh Hashana eve,');
+  });
+
+  it('uses the Hebrew shift names when the app is in Hebrew', () => {
+    setCurrentLang('he');
+    const { out } = exportSeptember();
+    expect(out.csv).toContain(',משמרת בוקר,');
+    expect(out.csv).toContain(',משמרת לילה,');
+    expect(out.csv).toContain(',משמרת מלאה,');
   });
 });
