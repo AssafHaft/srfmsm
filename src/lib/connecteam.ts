@@ -13,6 +13,10 @@ export const CONNECTEAM_HEADERS = [
 
 type Row = Partial<Record<(typeof CONNECTEAM_HEADERS)[number], string>>;
 
+// The job every exported shift belongs to in Connecteam. Not translated: it
+// must match the job's name in Connecteam exactly.
+export const CONNECTEAM_JOB = 'תחזוקה כללי';
+
 // Quote only when needed, like the template
 const cell = (v: string) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 
@@ -49,6 +53,7 @@ export function teamSheetToConnecteam(sheet: TeamSheet, nameOf: (id: string) => 
         Start: s.start,
         End: s.end,
         'Shift title': title,
+        Job: CONNECTEAM_JOB,
         Users: nameOf(id).trim(),
         Note: note,
         'Require Approval': 'no',

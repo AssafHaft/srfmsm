@@ -6,7 +6,7 @@ import { setCurrentLang } from '../src/i18n';
 import { gridKeys } from '../src/lib/dates';
 import { DailySchedule, ScheduleVersion, SheetNotes } from '../src/types';
 import { config, team } from './helpers';
-import { CONNECTEAM_HEADERS, connecteamFileName, teamSheetToConnecteam, usDate } from '../src/lib/connecteam';
+import { CONNECTEAM_HEADERS, CONNECTEAM_JOB, connecteamFileName, teamSheetToConnecteam, usDate } from '../src/lib/connecteam';
 
 // Reads the stored (uncompressed) ZIP written by buildXlsx
 const unzip = (bytes: Uint8Array): Record<string, string> => {
@@ -282,11 +282,11 @@ describe('Connecteam export', () => {
     expect(lines.some(l => l.startsWith('09/20/2026') || l.startsWith('09/21/2026'))).toBe(false);
     const sept1 = lines.filter(l => l.startsWith('09/01/2026'));
     expect(sept1).toEqual([
-      '09/01/2026,05:00,15:00,,,,Morning shift,,,Nitzan,,,,,no,',
-      '09/01/2026,14:00,00:00,,,,Night shift,,,"Dan ""D"" Levi",,,,,no,',
-      '09/01/2026,14:00,00:00,,,,Night shift,,,Inbar,,,,,no,',
+      '09/01/2026,05:00,15:00,,,,Morning shift,תחזוקה כללי,,Nitzan,,,,,no,',
+      '09/01/2026,14:00,00:00,,,,Night shift,תחזוקה כללי,,"Dan ""D"" Levi",,,,,no,',
+      '09/01/2026,14:00,00:00,,,,Night shift,תחזוקה כללי,,Inbar,,,,,no,',
     ]);
-    expect(lines.filter(l => l.startsWith('09/04/2026'))).toEqual(['09/04/2026,05:00,19:00,,,,Full shift,,,Golan,,,,,no,']);
+    expect(lines.filter(l => l.startsWith('09/04/2026'))).toEqual(['09/04/2026,05:00,19:00,,,,Full shift,תחזוקה כללי,,Golan,,,,,no,']);
     expect(lines.filter(l => l.startsWith('09/08/2026'))).toHaveLength(2);
   });
 
@@ -304,5 +304,7 @@ describe('Connecteam export', () => {
     expect(out.csv).toContain(',משמרת בוקר,');
     expect(out.csv).toContain(',משמרת לילה,');
     expect(out.csv).toContain(',משמרת מלאה,');
+    // The job name stays the same in either language
+    expect(CONNECTEAM_JOB).toBe('תחזוקה כללי');
   });
 });
